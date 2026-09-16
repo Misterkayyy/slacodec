@@ -1,0 +1,42 @@
+# Build
+build/
+build-*/
+cmake-build-*/
+compile_commands.json
+CMakeCache.txt
+CMakeFiles/
+Makefile
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.exe
+
+# Local output / experiments
+out/
+tmp/
+.cache/
+*.tmp
+*.log
+
+# Codec artifacts
+*.slac
+
+# Áudio
+# Por padrão, não commitar WAVs grandes.
+# Depois podemos abrir exceções para vetores pequenos e determinísticos.
+*.wav
+
+# Exceções úteis:
+# - manter HRIR, se você quiser
+# - manter vetores pequenos de teste, se existirem
+!ir/
+!ir/*.wav
+!tests/
+!tests/vectors/
+!tests/vectors/**/*.wav
+
+# Golden outputs
+golden/out/
+*.golden.wav

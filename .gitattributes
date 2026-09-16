@@ -1,0 +1,14 @@
+* text=auto
+
+*.cpp text
+*.h text
+*.hpp text
+*.c text
+*.txt text
+*.cmake text
+*.md text
+*.sh text eol=lf
+
+*.wav binary
+*.slac binary
+*.bin binary
