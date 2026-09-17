@@ -3,6 +3,7 @@
 #include "convolver.hpp"
 #include "fdn_reverb.hpp"
 #include "limiter.hpp"
+#include "slac/core/auto_chunk.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -28,6 +29,16 @@ struct SpatialChainConfig {
     float ceiling     = 0.988f;
     float lookahead_s = 0.008f;
     float release_s   = 0.120f;
+
+    // ── Automação espacial (chunk auto) ──────────────────────
+    std::vector<slac::core::AutoKeyframe> auto_keyframes;
+    bool use_auto = true;  // false = --no-auto
+    
+    // Taxas máximas de mudança (slew-limit) para evitar zipper/pumping
+    // wideness: 5.0/s em escala 0-1 = 5000 permille/s
+    float wideness_slew_rate = 5.0f;
+    // reverb_wet: 2.0/s em escala 0-1 = 200%/s
+    float reverb_wet_slew_rate = 2.0f;
 };
 
 struct SpatialChainStats {
@@ -42,6 +53,75 @@ struct SpatialChainStats {
     float max_gain_reduction_db = 0.0f;
     float uniform_gain_db     = 0.0f;
     size_t out_samples = 0;
+    size_t auto_keyframes_applied = 0;
+};
+
+// ── Helper: curva de automação por amostra ───────────────────
+class AutomationCurve {
+public:
+    AutomationCurve(const std::vector<slac::core::AutoKeyframe>& keyframes,
+                    uint8_t param_id,
+                    float base_value,
+                    float slew_rate_per_sec,
+                    uint32_t sample_rate)
+        : base_(base_value),
+          slew_delta_(slew_rate_per_sec / static_cast<float>(sample_rate)),
+          sr_(sample_rate)
+    {
+        for (const auto& kf : keyframes) {
+            if (kf.param_id == param_id) {
+                points_.push_back({kf.sample_offset, kf.value});
+            }
+        }
+        current_ = base_;
+    }
+
+    float get_sample(size_t sample_idx) {
+        if (points_.empty()) return base_;
+
+        // Encontra o target value para esta amostra via interpolação linear
+        float target = base_;
+        
+        if (sample_idx <= points_.front().offset) {
+            target = base_;
+        } else if (sample_idx >= points_.back().offset) {
+            target = points_.back().value;
+        } else {
+            // Busca binária para encontrar o intervalo
+            size_t lo = 0, hi = points_.size() - 1;
+            while (lo < hi - 1) {
+                size_t mid = (lo + hi) / 2;
+                if (points_[mid].offset <= sample_idx) lo = mid;
+                else hi = mid;
+            }
+            
+            // Interpolação linear entre points_[lo] e points_[hi]
+            float t = static_cast<float>(sample_idx - points_[lo].offset) /
+                      static_cast<float>(points_[hi].offset - points_[lo].offset);
+            target = points_[lo].value + t * (points_[hi].value - points_[lo].value);
+        }
+
+        // Aplica slew-limit
+        float delta = target - current_;
+        if (std::fabs(delta) > slew_delta_) {
+            delta = (delta > 0) ? slew_delta_ : -slew_delta_;
+        }
+        current_ += delta;
+        
+        return current_;
+    }
+
+private:
+    struct Point {
+        uint32_t offset;
+        float value;
+    };
+    
+    std::vector<Point> points_;
+    float base_;
+    float slew_delta_;
+    float current_;
+    uint32_t sr_;
 };
 
 inline void widen_float(std::vector<float>& L, std::vector<float>& R, float w) {
@@ -120,8 +200,69 @@ inline SpatialChainStats apply_spatial_chain(
     st.rms_input     = static_cast<float>(std::sqrt(sumsq_in / (2.0 * n)));
     st.rms_input_db  = 20.0f * std::log10(st.rms_input + 1e-12f);
 
-    // 1) widening
-    widen_float(L, R, cfg.wideness);
+    // ── Setup de automação ───────────────────────────────────
+    bool use_auto_wideness = cfg.use_auto && !cfg.auto_keyframes.empty();
+    bool use_auto_reverb = cfg.use_auto && !cfg.auto_keyframes.empty() && cfg.reverb_enabled;
+    
+    // Curva de wideness: base = cfg.wideness (escala 0-1), target em escala 0-1
+    // Keyframes têm wideness_permille (0-1500), precisamos converter para escala 0-1
+    // Ex: 1140 permille = 114% = 1.14 em escala 0-1
+    std::vector<slac::core::AutoKeyframe> wideness_kfs_scaled;
+    if (use_auto_wideness) {
+        for (const auto& kf : cfg.auto_keyframes) {
+            if (kf.param_id == static_cast<uint8_t>(slac::core::AutoParam::WidenessPermille)) {
+                slac::core::AutoKeyframe scaled = kf;
+                scaled.value = kf.value / 1000.0f; // converte permille para escala 0-1
+                wideness_kfs_scaled.push_back(scaled);
+            }
+        }
+    }
+    
+    AutomationCurve wideness_curve(
+        wideness_kfs_scaled,
+        static_cast<uint8_t>(slac::core::AutoParam::WidenessPermille),
+        cfg.wideness,
+        cfg.wideness_slew_rate,
+        sr
+    );
+    
+    // Curva de reverb_wet: base = cfg.reverb.wet (escala 0-1), target em escala 0-1
+    // Keyframes têm reverb_wet_pct (0-100), precisamos converter para escala 0-1
+    // Ex: 12% = 0.12 em escala 0-1
+    std::vector<slac::core::AutoKeyframe> reverb_kfs_scaled;
+    if (use_auto_reverb) {
+        for (const auto& kf : cfg.auto_keyframes) {
+            if (kf.param_id == static_cast<uint8_t>(slac::core::AutoParam::ReverbWetPct)) {
+                slac::core::AutoKeyframe scaled = kf;
+                scaled.value = kf.value / 100.0f; // converte percent para escala 0-1
+                reverb_kfs_scaled.push_back(scaled);
+            }
+        }
+    }
+    
+    AutomationCurve reverb_curve(
+        reverb_kfs_scaled,
+        static_cast<uint8_t>(slac::core::AutoParam::ReverbWetPct),
+        cfg.reverb.wet,
+        cfg.reverb_wet_slew_rate,
+        sr
+    );
+
+    // 1) widening (com automação por amostra se disponível)
+    if (use_auto_wideness) {
+        for (size_t i = 0; i < n; ++i) {
+            float w = wideness_curve.get_sample(i);
+            // Converte de escala 0-1 (onde 1.0 = 100%) para multiplicador
+            // wideness_permille / 1000.0 já está em escala 0-1
+            float mid  = 0.5f * (L[i] + R[i]);
+            float side = L[i] - R[i];
+            float s = side * w;
+            L[i] = mid + 0.5f * s;
+            R[i] = mid - 0.5f * s;
+        }
+    } else {
+        widen_float(L, R, cfg.wideness);
+    }
 
     // 2) HRIR true-stereo (trim de ecos opcional + unity-gain)
     if (cfg.hrir && cfg.hrir->length() > 0) {
@@ -158,7 +299,7 @@ inline SpatialChainStats apply_spatial_chain(
         R = std::move(oR);
     }
 
-    // 3) reverb: wet somado ao dry, sem clamp
+    // 3) reverb: wet somado ao dry, sem clamp (com automação por amostra)
     if (cfg.reverb_enabled && cfg.reverb.wet > 0.0f) {
         size_t m = L.size();
         std::vector<float> wL(m, 0.0f), wR(m, 0.0f);
@@ -168,18 +309,35 @@ inline SpatialChainStats apply_spatial_chain(
             conv_true_stereo_float(L, R, *cfg.reverb_ir, cL, cR);
             cL.resize(m, 0.0f);
             cR.resize(m, 0.0f);
-            for (size_t i = 0; i < m; ++i) {
-                wL[i] = cL[i] * cfg.reverb.wet;
-                wR[i] = cR[i] * cfg.reverb.wet;
+            
+            if (use_auto_reverb) {
+                for (size_t i = 0; i < m; ++i) {
+                    float wet = reverb_curve.get_sample(i);
+                    wL[i] = cL[i] * wet;
+                    wR[i] = cR[i] * wet;
+                }
+            } else {
+                for (size_t i = 0; i < m; ++i) {
+                    wL[i] = cL[i] * cfg.reverb.wet;
+                    wR[i] = cR[i] * cfg.reverb.wet;
+                }
             }
         } else {
             FdnReverb rev;
             rev.configure(cfg.reverb, sr);
             std::vector<float> wet_gain(m, cfg.reverb.wet);
-            if (cfg.reverb_adaptive)
-                compute_adaptive_wet_gain_float(L.data(), R.data(), m,
-                                                cfg.reverb.wet, wet_gain.data());
-            rev.process(L.data(), R.data(), wL.data(), wR.data(), m, wet_gain.data());
+            
+            if (use_auto_reverb) {
+                for (size_t i = 0; i < m; ++i) {
+                    wet_gain[i] = reverb_curve.get_sample(i);
+                }
+                rev.process(L.data(), R.data(), wL.data(), wR.data(), m, wet_gain.data());
+            } else {
+                if (cfg.reverb_adaptive)
+                    compute_adaptive_wet_gain_float(L.data(), R.data(), m,
+                                                    cfg.reverb.wet, wet_gain.data());
+                rev.process(L.data(), R.data(), wL.data(), wR.data(), m, wet_gain.data());
+            }
         }
 
         for (size_t i = 0; i < m; ++i) {
@@ -246,6 +404,7 @@ inline SpatialChainStats apply_spatial_chain(
     }
 
     st.out_samples = outn;
+    st.auto_keyframes_applied = use_auto_wideness ? cfg.auto_keyframes.size() : 0;
     return st;
 }
 

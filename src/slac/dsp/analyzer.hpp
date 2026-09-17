@@ -291,9 +291,9 @@ inline void derive_spatial_params(AudioFeatures& feat) {
     float centroid = feat.spectral_centroid;
     float flux = feat.spectral_flux;
 
-    // Normalize flux to a 0-1 range (heuristic).
-    // Typical flux values depend on window size and sample rate.
-    float flux_norm = std::min(flux / 50.0f, 1.0f);
+    // Normalização ajustada: flux típico de música real fica entre 100-10000
+    // Usamos log para capturar dinâmica ampla sem saturar
+    float flux_norm = std::min(std::log10(flux + 1.0f) / 4.0f, 1.0f);
 
     if (centroid > 6000.0f) {
         // Very bright.
@@ -348,6 +348,81 @@ inline void derive_spatial_params(AudioFeatures& feat) {
     feat.suggested_reverb_wet_pct = static_cast<uint8_t>(
         std::max(12.0f, std::min(wet_float, 40.0f))
     );
+}
+
+// ──────────────────────────────────────────────────────────────
+// Auto-spatial keyframe generation (with EMA and Hysteresis)
+// ──────────────────────────────────────────────────────────────
+
+inline std::vector<core::AutoKeyframe> generate_auto_keyframes(
+    const std::vector<std::vector<int32_t>>& channels,
+    uint8_t bits_per_sample,
+    uint32_t sample_rate,
+    float window_sec = 2.0f,
+    float hop_sec = 1.0f,
+    uint16_t wideness_threshold = 15, 
+    uint8_t reverb_threshold = 3
+) {
+    std::vector<core::AutoKeyframe> keyframes;
+    if (channels.empty() || channels[0].empty()) return keyframes;
+    if (channels.size() < 2) return keyframes; // Automacao so para stereo por enquanto
+
+    const size_t total_samples = channels[0].size();
+    const size_t window_size = static_cast<size_t>(window_sec * sample_rate);
+    const size_t hop_size = static_cast<size_t>(hop_sec * sample_rate);
+
+    if (window_size == 0 || hop_size == 0) return keyframes;
+
+    const std::vector<int32_t>& left = channels[0];
+    const std::vector<int32_t>& right = channels[1];
+
+    // EMA state (Exponential Moving Average para suavizar a analise)
+    float ema_wideness = 1000.0f; // Comeca com 1000 (100%)
+    float ema_reverb = 0.0f;
+    float alpha = 0.4f; // 40% da leitura atual, 60% do historico
+
+    // Last emitted keyframe state (para a histerese)
+    int last_emitted_wideness = -1;
+    int last_emitted_reverb = -1;
+
+    for (size_t start = 0; start < total_samples; start += hop_size) {
+        size_t end = std::min(start + window_size, total_samples);
+        if (end <= start) break;
+
+        std::vector<int32_t> win_l(left.begin() + start, left.begin() + end);
+        std::vector<int32_t> win_r(right.begin() + start, right.begin() + end);
+
+        AudioFeatures feat = analyze_audio(win_l, win_r, bits_per_sample, sample_rate);
+        derive_spatial_params(feat);
+
+        // EMA smoothing
+        ema_wideness = alpha * feat.suggested_wideness_permille + (1.0f - alpha) * ema_wideness;
+        ema_reverb   = alpha * feat.suggested_reverb_wet_pct   + (1.0f - alpha) * ema_reverb;
+
+        uint16_t cur_wideness = static_cast<uint16_t>(std::round(ema_wideness));
+        uint8_t  cur_reverb   = static_cast<uint8_t>(std::round(ema_reverb));
+
+        // Hysteresis: only emit if changed significantly
+        bool emit = false;
+        if (keyframes.empty()) {
+            emit = true;
+        } else {
+            int diff_w = std::abs(static_cast<int>(cur_wideness) - last_emitted_wideness);
+            int diff_r = std::abs(static_cast<int>(cur_reverb) - last_emitted_reverb);
+            if (diff_w >= wideness_threshold || diff_r >= reverb_threshold) {
+                emit = true;
+            }
+        }
+
+        if (emit) {
+            keyframes.push_back({static_cast<uint32_t>(start), 0, static_cast<float>(cur_wideness)});
+            keyframes.push_back({static_cast<uint32_t>(start), 1, static_cast<float>(cur_reverb)});
+            last_emitted_wideness = cur_wideness;
+            last_emitted_reverb = cur_reverb;
+        }
+    }
+
+    return keyframes;
 }
 
 } // namespace slac::dsp

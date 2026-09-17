@@ -151,6 +151,7 @@ Decode options:
   --limit-mode <m>         normalize | loudness | limit | none (default: normalize)
   --hrir-echo-trim <0-100> Atenua ecos da HRIR apos o tap direto (%; 100 = off)
   --no-limit               Disable headroom management entirely
+  --no-auto                Disable spatial automation even if auto chunk present
 
 Verify:
   Decodes <input.slac> and compares sample-by-sample against
@@ -242,9 +243,11 @@ static int cmd_encode(int argc, char** argv) {
             pcm[c][i] = float_to_pcm(channels_data[c][i]);
     }
 
+    std::vector<slac::core::AutoKeyframe> auto_kfs;
     if (auto_spatial && wav.num_channels == 2) {
         std::cout << "Analyzing audio for spatial parameters...\n";
 
+        // 1. Analise global para o SpatMetadata (fallback/base)
         slac::dsp::AudioFeatures features = slac::dsp::analyze_audio(
             pcm[0], pcm[1], 16, wav.sample_rate);
         slac::dsp::derive_spatial_params(features);
@@ -253,16 +256,21 @@ static int cmd_encode(int argc, char** argv) {
         reverb_wet = features.suggested_reverb_wet_pct;
         preset_id  = features.suggested_preset_id;
 
-        std::cout << "  Analysis:\n";
+        std::cout << "  Analysis (global base):\n";
         std::cout << "    stereo_width:       " << features.stereo_width       << "\n";
         std::cout << "    stereo_correlation: " << features.stereo_correlation << "\n";
         std::cout << "    spectral_centroid:  " << features.spectral_centroid  << " Hz\n";
         std::cout << "    spectral_flux:      " << features.spectral_flux      << "\n";
         std::cout << "    rms_energy:         " << features.rms_energy         << "\n";
-        std::cout << "  Derived:\n";
+        std::cout << "  Derived (base):\n";
         std::cout << "    wideness:           " << wideness   << "%\n";
         std::cout << "    reverb_wet:         " << reverb_wet << "%\n";
         std::cout << "    preset_id:          " << preset_id  << "\n";
+
+        // 2. Geracao dos keyframes com histerese
+        std::cout << "Generating auto-spatial keyframes (window=2s, hop=1s, hysteresis=on)...\n";
+        auto_kfs = slac::dsp::generate_auto_keyframes(pcm, 16, wav.sample_rate);
+        std::cout << "  Generated " << auto_kfs.size() << " keyframes.\n";
     } else if (auto_spatial) {
         std::cerr << "Warning: --auto-spatial requires stereo, ignoring.\n";
         auto_spatial = false;
@@ -299,13 +307,24 @@ static int cmd_encode(int argc, char** argv) {
         fill_fallback(spat, spat.preset_id);
     }
 
+    // Seta o bit 0 do flags se houver automacao
+    if (!auto_kfs.empty() && has_spatial) {
+        spat.flags |= 0x01; // bit 0 = has_automation
+    }
+
+    const std::vector<slac::core::AutoKeyframe>* auto_kfs_ptr = nullptr;
+    if (!auto_kfs.empty()) {
+        auto_kfs_ptr = &auto_kfs;
+    }
+
     std::vector<uint8_t> slac_data;
     try {
         slac_data = slac::encodeSlacFile(
             pcm, fmt,
             has_spatial ? &spat : nullptr,
             lpc_order, lpc_shift,
-            entropy_range);
+            entropy_range,
+            auto_kfs_ptr);
     } catch (const std::exception& e) {
         std::cerr << "Encode error: " << e.what() << "\n";
         return 1;
@@ -369,6 +388,7 @@ static int cmd_decode(int argc, char** argv) {
     std::string ir_path   = get_opt(argc, argv, "--ir", "");
     std::string ir_dir    = get_opt(argc, argv, "--ir-dir", "./ir");
     std::string hrir_path = get_opt(argc, argv, "--hrir", "");
+    bool no_auto         = has_flag(argc, argv, "--no-auto");
 
     std::vector<uint8_t> slac_data;
     if (!read_file(input_path, slac_data)) {
@@ -380,10 +400,11 @@ static int cmd_decode(int argc, char** argv) {
     slac::SpatMetadata spat;
     slac::SeekTable seek;
     slac::HashInfo hash;
+    std::vector<slac::core::AutoKeyframe> auto_kfs;
     std::vector<std::vector<int32_t>> pcm;
 
     try {
-        pcm = slac::decodeSlacFile(slac_data, &fmt, &spat, &seek, &hash);
+        pcm = slac::decodeSlacFile(slac_data, &fmt, &spat, &seek, &hash, true, &auto_kfs);
     } catch (const std::exception& e) {
         std::cerr << "Decode error: " << e.what() << "\n";
         return 1;
@@ -412,6 +433,16 @@ static int cmd_decode(int argc, char** argv) {
         cfg.mono_safe = (spat.flags & 0x02u) != 0u;
 	cfg.hrir_echo_trim = static_cast<float>(
             get_opt_int(argc, argv, "--hrir-echo-trim", 100)) / 100.0f;
+
+        // Automação espacial
+        if (!auto_kfs.empty() && !no_auto) {
+            cfg.auto_keyframes = auto_kfs;
+            cfg.use_auto = true;
+            std::cout << "    Auto:     " << auto_kfs.size() 
+                      << " keyframes (wideness + reverb interpolation)\n";
+        } else if (!auto_kfs.empty() && no_auto) {
+            std::cout << "    Auto:     disabled (--no-auto)\n";
+        }
 
         if (has_flag(argc, argv, "--no-limit")) {
             cfg.limit_mode = LM::None;
@@ -740,9 +771,10 @@ static int cmd_info(int argc, char** argv) {
     slac::SpatMetadata spat;
     slac::SeekTable seek;
     slac::HashInfo hash;
+    std::vector<slac::core::AutoKeyframe> auto_kfs;
 
     try {
-        slac::decodeSlacFile(slac_data, &fmt, &spat, &seek, &hash);
+        slac::decodeSlacFile(slac_data, &fmt, &spat, &seek, &hash, true, &auto_kfs);
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;
@@ -782,6 +814,27 @@ static int cmd_info(int argc, char** argv) {
     std::cout << "  fallback_category: " << category_name(spat.fallback_category) << "\n";
     std::cout << "  fallback_size:     " << static_cast<int>(spat.fallback_size) << "\n";
     std::cout << "  fallback_decay:    " << static_cast<int>(spat.fallback_decay) << "\n";
+
+    std::cout << "\n[auto]\n";
+    if (!auto_kfs.empty()) {
+        std::cout << "  present:           yes\n";
+        std::cout << "  keyframe_count:    " << auto_kfs.size() << "\n";
+
+        uint32_t min_offset = auto_kfs.front().sample_offset;
+        uint32_t max_offset = auto_kfs.back().sample_offset;
+        std::cout << "  span:              " << min_offset << ".." << max_offset
+                  << " samples (" << (max_offset - min_offset) << " range)\n";
+
+        int count_wideness = 0, count_reverb = 0;
+        for (const auto& kf : auto_kfs) {
+            if (kf.param_id == 0) ++count_wideness;
+            else if (kf.param_id == 1) ++count_reverb;
+        }
+        std::cout << "  params:            wideness=" << count_wideness
+                  << ", reverb=" << count_reverb << "\n";
+    } else {
+        std::cout << "  present:           no\n";
+    }
 
     std::cout << "\n[file]\n";
     std::cout << "  size:              " << slac_data.size() << " bytes\n";
