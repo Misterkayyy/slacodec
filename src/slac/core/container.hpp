@@ -1,5 +1,6 @@
 #pragma once
 
+#include "auto_chunk.hpp"
 #include "block.hpp"
 #include "ms.hpp"
 #include "crc32.hpp"
@@ -70,6 +71,7 @@ inline constexpr uint32_t kChunkSLAC = fourCC('S', 'L', 'A', 'C');
 inline constexpr uint32_t kChunkFmt  = fourCC('f', 'm', 't', ' ');
 inline constexpr uint32_t kChunkData = fourCC('d', 'a', 't', 'a');
 inline constexpr uint32_t kChunkSpat = fourCC('s', 'p', 'a', 't');
+inline constexpr uint32_t kChunkAuto = fourCC('a', 'u', 't', 'o');
 inline constexpr uint32_t kChunkSeek = fourCC('s', 'e', 'e', 'k');
 inline constexpr uint32_t kChunkHash = fourCC('h', 'a', 's', 'h');
 
@@ -161,7 +163,8 @@ inline std::vector<uint8_t> encodeSlacFile(
     const SpatMetadata* spat = nullptr,
     int lpc_order = 8,
     int lpc_shift = 15,
-    bool use_range_coding = false)
+    bool use_range_coding = false,
+    const std::vector<core::AutoKeyframe>* auto_kfs = nullptr)
 {
     if (channels.empty())
         throw std::invalid_argument("encodeSlacFile: no channels");
@@ -272,6 +275,14 @@ inline std::vector<uint8_t> encodeSlacFile(
     if (spat)
         detail::appendSpat(spat_payload, *spat);
 
+    // ── auto chunk ──────────────────────────────────────────
+    std::vector<uint8_t> auto_payload;
+    if (auto_kfs && !auto_kfs->empty()) {
+        if (!core::auto_chunk_serialize(*auto_kfs, auto_payload)) {
+            throw std::runtime_error("encodeSlacFile: failed to serialize auto chunk");
+        }
+    }
+
     // ── SLAC chunk ──────────────────────────────────────────
     std::vector<uint8_t> slac_payload = {0, 1, 0, 0};
 
@@ -281,6 +292,8 @@ inline std::vector<uint8_t> encodeSlacFile(
     detail::appendChunk(file, detail::kChunkFmt,  fmt_payload);
     if (spat)
         detail::appendChunk(file, detail::kChunkSpat, spat_payload);
+    if (auto_kfs && !auto_kfs->empty())
+        detail::appendChunk(file, detail::kChunkAuto, auto_payload);
     detail::appendChunk(file, detail::kChunkSeek, seek_payload);
     detail::appendChunk(file, detail::kChunkHash, hash_payload);
     detail::appendChunk(file, detail::kChunkData, data_payload);
@@ -298,7 +311,8 @@ inline std::vector<std::vector<int32_t>> decodeSlacFile(
     SpatMetadata* out_spat = nullptr,
     SeekTable* out_seek = nullptr,
     HashInfo* out_hash = nullptr,
-    bool strict_crc = true)
+    bool strict_crc = true,
+    std::vector<core::AutoKeyframe>* out_auto = nullptr)
 {
     if (file.size() < 12)
         throw std::invalid_argument("decodeSlacFile: too small");
@@ -368,6 +382,16 @@ inline std::vector<std::vector<int32_t>> decodeSlacFile(
             if (payload_sz >= 10) {
                 size_t p = 0;
                 spat = detail::readSpat(payload, payload_sz, p);
+            }
+        }
+        else if (id == detail::kChunkAuto) {
+            if (out_auto) {
+                std::vector<core::AutoKeyframe> parsed;
+                if (core::auto_chunk_parse(payload, payload_sz, parsed)) {
+                    *out_auto = std::move(parsed);
+                } else {
+                    throw std::runtime_error("decodeSlacFile: invalid auto chunk payload");
+                }
             }
         }
         else if (id == detail::kChunkSeek) {

@@ -530,7 +530,7 @@ static int cmd_decode(int argc, char** argv) {
 }
 
 // ──────────────────────────────────────────────────────────────
-/ VERIFY (bit-exact + SHA-256)
+// VERIFY (bit-exact + SHA-256)
 // ──────────────────────────────────────────────────────────────
 
 static int cmd_verify(int argc, char** argv) {
