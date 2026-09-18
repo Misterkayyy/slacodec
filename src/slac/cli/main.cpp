@@ -106,7 +106,7 @@ static EncoderPreset get_preset(const std::string& name) {
     if (name == "high")
         return {"high",     4096, 12, 15, true,  false};
     if (name == "extreme")
-        return {"extreme",  8192, 16, 15, true,  false};
+        return {"extreme",  4096, 16, 15, true,  false};
     return {"balanced", 4096, 8, 15, true, false};
 }
 

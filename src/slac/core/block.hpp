@@ -52,7 +52,7 @@ inline int estimateRiceK(const int32_t* data, size_t count, int maxK = 15) {
     uint64_t bestCost = std::numeric_limits<uint64_t>::max();
 
     for (int k = 0; k <= maxK; ++k) {
-        uint64_t cost = 0;
+        uint64_t cost = 8;
         for (size_t i = 0; i < count; ++i) {
             uint32_t u = foldSigned(data[i]);
             uint32_t q = u >> k;
@@ -100,7 +100,6 @@ inline int detectWastedBits(const std::vector<int32_t>& samples) {
 
 inline int choosePartitionOrder(size_t residualCount) {
     if (residualCount == 0) return 0;
-
     int order = 0;
     for (int o = 4; o >= 0; --o) {
         size_t numPartitions = static_cast<size_t>(1) << o;
@@ -113,22 +112,6 @@ inline int choosePartitionOrder(size_t residualCount) {
 }
 
 } // namespace detail
-
-// ──────────────────────────────────────────────────────────────
-// Block format (v3 — entropy mode):
-//
-//   blockSize       u32
-//   bitsPerSample   u8
-//   wastedBits      u8
-//   order           u8
-//   shift           u8
-//   coeffBits       u8
-//   partitionOrder  u8
-//   entropyMode     u8        (0 = Rice, 1 = Range)
-//   [coefficients]  order × coeffBits
-//   [warmup]        order × (bitsPerSample - wasted)
-//   [residuals]     Rice partitions OU Range-coded
-// ──────────────────────────────────────────────────────────────
 
 inline std::vector<uint8_t> encodeBlockMono(
     const std::vector<int32_t>& samples,
@@ -165,7 +148,7 @@ inline std::vector<uint8_t> encodeBlockMono(
         input = &shifted;
     }
 
-    // ── LPC best-order + Tukey ──────────────────────────────
+    // ── LPC best-order + Tukey (shift dinâmico) ─────────────
     int shift = lpcShift;
     int coeffBits = 16;
     int order = 0;
@@ -175,9 +158,10 @@ inline std::vector<uint8_t> encodeBlockMono(
 
     if (maxOrder > 0 && input->size() > 1) {
         LpcBestResult bestLpc = analyzeLpcBestOrder(
-            *input, maxOrder, shift, coeffBits, WindowType::Tukey, 0.5);
+            *input, maxOrder, shift, coeffBits, WindowType::Tukey, 0.5, bitsPerSample);
 
         order = bestLpc.order;
+        shift = bestLpc.shift;
         q = bestLpc.lpc;
         residuals = std::move(bestLpc.residuals);
     } else {
@@ -186,7 +170,7 @@ inline std::vector<uint8_t> encodeBlockMono(
         residuals = *input;
     }
 
-    // ── Rice partitioning (usado só no modo Rice) ───────────
+    // ── Rice partitioning ───────────────────────────────────
     int partitionOrder = detail::choosePartitionOrder(residuals.size());
     int numPartitions = 1 << partitionOrder;
 
@@ -228,7 +212,6 @@ inline std::vector<uint8_t> encodeBlockMono(
 
     // ── Residuals ───────────────────────────────────────────
     if (useRangeCoding) {
-        // Range coding: modelo adaptativo sobre resíduos folded.
         RangeEncoder renc;
         AdaptiveByteModel model;
 
@@ -244,7 +227,6 @@ inline std::vector<uint8_t> encodeBlockMono(
         for (uint8_t b : rbytes)
             bw.writeBits(b, 8);
     } else {
-        // Rice particionado.
         size_t offset = 0;
         for (int p = 0; p < numPartitions; ++p) {
             size_t partSize = basePartSize + (static_cast<size_t>(p) < remainder ? 1 : 0);
@@ -322,7 +304,6 @@ inline std::vector<int32_t> decodeBlockMono(
     size_t idx = static_cast<size_t>(order);
 
     if (entropyMode == 1) {
-        // ── Range coding ────────────────────────────────────
         br.alignToByte();
         uint32_t rsize = br.readBits(32);
         std::vector<uint8_t> rbytes(rsize);
@@ -343,7 +324,6 @@ inline std::vector<int32_t> decodeBlockMono(
             ++idx;
         }
     } else {
-        // ── Rice particionado ───────────────────────────────
         size_t residualCount = blockSize - static_cast<size_t>(order);
         size_t basePartSize = residualCount / numPartitions;
         size_t remainder = residualCount % numPartitions;
