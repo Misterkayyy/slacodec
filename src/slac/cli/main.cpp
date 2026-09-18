@@ -152,6 +152,7 @@ Decode options:
   --hrir-echo-trim <0-100> Atenua ecos da HRIR apos o tap direto (%; 100 = off)
   --no-limit               Disable headroom management entirely
   --no-auto                Disable spatial automation even if auto chunk present
+  --partitioned            Use partitioned FFT convolution (streaming-ready)
 
 Verify:
   Decodes <input.slac> and compares sample-by-sample against
@@ -389,6 +390,7 @@ static int cmd_decode(int argc, char** argv) {
     std::string ir_dir    = get_opt(argc, argv, "--ir-dir", "./ir");
     std::string hrir_path = get_opt(argc, argv, "--hrir", "");
     bool no_auto         = has_flag(argc, argv, "--no-auto");
+    bool partitioned_conv = has_flag(argc, argv, "--partitioned");
 
     std::vector<uint8_t> slac_data;
     if (!read_file(input_path, slac_data)) {
@@ -433,6 +435,8 @@ static int cmd_decode(int argc, char** argv) {
         cfg.mono_safe = (spat.flags & 0x02u) != 0u;
 	cfg.hrir_echo_trim = static_cast<float>(
             get_opt_int(argc, argv, "--hrir-echo-trim", 100)) / 100.0f;
+	cfg.use_partitioned_conv = partitioned_conv;
+	cfg.conv_block_size = 128;
 
         // Automação espacial
         if (!auto_kfs.empty() && !no_auto) {

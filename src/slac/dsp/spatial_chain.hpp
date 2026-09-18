@@ -3,6 +3,7 @@
 #include "convolver.hpp"
 #include "fdn_reverb.hpp"
 #include "limiter.hpp"
+#include "partitioned_convolver.hpp"
 #include "slac/core/auto_chunk.hpp"
 
 #include <algorithm>
@@ -16,13 +17,17 @@ struct SpatialChainConfig {
     float wideness   = 1.0f;     // 1.0 = 100%
     bool  mono_safe  = true;
     const TrueStereoIR* hrir = nullptr;
-    bool  hrir_unity_gain = true;   // normaliza HRIR p/ ganho coerente <= 1
-    float hrir_echo_trim = 1.0f;    // 1.0 = off; <1 atenua taps apos o direto
+    bool  hrir_unity_gain = true;
+    float hrir_echo_trim = 1.0f;
 
     bool  reverb_enabled  = false;
     bool  reverb_adaptive = true;
     FdnReverbParams reverb;
     const TrueStereoIR* reverb_ir = nullptr;
+
+    // Convolução: direta (offline, latência zero) vs particionada (streaming)
+    bool use_partitioned_conv = false;
+    size_t conv_block_size = 128;
 
     enum class LimitMode { Limit, Normalize, Loudness, None };
     LimitMode limit_mode = LimitMode::Normalize;
@@ -30,14 +35,10 @@ struct SpatialChainConfig {
     float lookahead_s = 0.008f;
     float release_s   = 0.120f;
 
-    // ── Automação espacial (chunk auto) ──────────────────────
     std::vector<slac::core::AutoKeyframe> auto_keyframes;
-    bool use_auto = true;  // false = --no-auto
+    bool use_auto = true;
     
-    // Taxas máximas de mudança (slew-limit) para evitar zipper/pumping
-    // wideness: 5.0/s em escala 0-1 = 5000 permille/s
     float wideness_slew_rate = 5.0f;
-    // reverb_wet: 2.0/s em escala 0-1 = 200%/s
     float reverb_wet_slew_rate = 2.0f;
 };
 
@@ -79,7 +80,6 @@ public:
     float get_sample(size_t sample_idx) {
         if (points_.empty()) return base_;
 
-        // Encontra o target value para esta amostra via interpolação linear
         float target = base_;
         
         if (sample_idx <= points_.front().offset) {
@@ -87,7 +87,6 @@ public:
         } else if (sample_idx >= points_.back().offset) {
             target = points_.back().value;
         } else {
-            // Busca binária para encontrar o intervalo
             size_t lo = 0, hi = points_.size() - 1;
             while (lo < hi - 1) {
                 size_t mid = (lo + hi) / 2;
@@ -95,13 +94,11 @@ public:
                 else hi = mid;
             }
             
-            // Interpolação linear entre points_[lo] e points_[hi]
             float t = static_cast<float>(sample_idx - points_[lo].offset) /
                       static_cast<float>(points_[hi].offset - points_[lo].offset);
             target = points_[lo].value + t * (points_[hi].value - points_[lo].value);
         }
 
-        // Aplica slew-limit
         float delta = target - current_;
         if (std::fabs(delta) > slew_delta_) {
             delta = (delta > 0) ? slew_delta_ : -slew_delta_;
@@ -204,15 +201,12 @@ inline SpatialChainStats apply_spatial_chain(
     bool use_auto_wideness = cfg.use_auto && !cfg.auto_keyframes.empty();
     bool use_auto_reverb = cfg.use_auto && !cfg.auto_keyframes.empty() && cfg.reverb_enabled;
     
-    // Curva de wideness: base = cfg.wideness (escala 0-1), target em escala 0-1
-    // Keyframes têm wideness_permille (0-1500), precisamos converter para escala 0-1
-    // Ex: 1140 permille = 114% = 1.14 em escala 0-1
     std::vector<slac::core::AutoKeyframe> wideness_kfs_scaled;
     if (use_auto_wideness) {
         for (const auto& kf : cfg.auto_keyframes) {
             if (kf.param_id == static_cast<uint8_t>(slac::core::AutoParam::WidenessPermille)) {
                 slac::core::AutoKeyframe scaled = kf;
-                scaled.value = kf.value / 1000.0f; // converte permille para escala 0-1
+                scaled.value = kf.value / 1000.0f;
                 wideness_kfs_scaled.push_back(scaled);
             }
         }
@@ -226,15 +220,12 @@ inline SpatialChainStats apply_spatial_chain(
         sr
     );
     
-    // Curva de reverb_wet: base = cfg.reverb.wet (escala 0-1), target em escala 0-1
-    // Keyframes têm reverb_wet_pct (0-100), precisamos converter para escala 0-1
-    // Ex: 12% = 0.12 em escala 0-1
     std::vector<slac::core::AutoKeyframe> reverb_kfs_scaled;
     if (use_auto_reverb) {
         for (const auto& kf : cfg.auto_keyframes) {
             if (kf.param_id == static_cast<uint8_t>(slac::core::AutoParam::ReverbWetPct)) {
                 slac::core::AutoKeyframe scaled = kf;
-                scaled.value = kf.value / 100.0f; // converte percent para escala 0-1
+                scaled.value = kf.value / 100.0f;
                 reverb_kfs_scaled.push_back(scaled);
             }
         }
@@ -248,12 +239,10 @@ inline SpatialChainStats apply_spatial_chain(
         sr
     );
 
-    // 1) widening (com automação por amostra se disponível)
+    // 1) widening
     if (use_auto_wideness) {
         for (size_t i = 0; i < n; ++i) {
             float w = wideness_curve.get_sample(i);
-            // Converte de escala 0-1 (onde 1.0 = 100%) para multiplicador
-            // wideness_permille / 1000.0 já está em escala 0-1
             float mid  = 0.5f * (L[i] + R[i]);
             float side = L[i] - R[i];
             float s = side * w;
@@ -294,19 +283,27 @@ inline SpatialChainStats apply_spatial_chain(
         }
 
         std::vector<float> oL, oR;
-        conv_true_stereo_float(L, R, h, oL, oR);
+        if (cfg.use_partitioned_conv) {
+            conv_true_stereo_partitioned(L, R, h, oL, oR, cfg.conv_block_size);
+        } else {
+            conv_true_stereo_float(L, R, h, oL, oR);
+        }
         L = std::move(oL);
         R = std::move(oR);
     }
 
-    // 3) reverb: wet somado ao dry, sem clamp (com automação por amostra)
+    // 3) reverb: wet somado ao dry, sem clamp
     if (cfg.reverb_enabled && cfg.reverb.wet > 0.0f) {
         size_t m = L.size();
         std::vector<float> wL(m, 0.0f), wR(m, 0.0f);
 
         if (cfg.reverb_ir && cfg.reverb_ir->length() > 0) {
             std::vector<float> cL, cR;
-            conv_true_stereo_float(L, R, *cfg.reverb_ir, cL, cR);
+            if (cfg.use_partitioned_conv) {
+                conv_true_stereo_partitioned(L, R, *cfg.reverb_ir, cL, cR, cfg.conv_block_size);
+            } else {
+                conv_true_stereo_float(L, R, *cfg.reverb_ir, cL, cR);
+            }
             cL.resize(m, 0.0f);
             cR.resize(m, 0.0f);
             
@@ -360,7 +357,6 @@ inline SpatialChainStats apply_spatial_chain(
     st.rms_before_db  = 20.0f * std::log10(st.rms_before + 1e-12f);
 
     if (cfg.limit_mode == SpatialChainConfig::LimitMode::Normalize) {
-        // peak align a fonte (teto ceiling): seguro, corpo = fonte - crest extra
         if (peak > 1e-9f) {
             float target = std::min(peak_in, cfg.ceiling);
             float g = target / peak;
@@ -369,8 +365,6 @@ inline SpatialChainStats apply_spatial_chain(
             st.max_gain_reduction_db = (g < 1.0f) ? -st.uniform_gain_db : 0.0f;
         }
     } else if (cfg.limit_mode == SpatialChainConfig::LimitMode::Loudness) {
-        // RMS align a fonte: corpo igual ao original; o crest extra e pago
-        // pelo limiter nos transientes que passarem do ceiling
         if (st.rms_before > 1e-9f) {
             float g = st.rms_input / st.rms_before;
             for (size_t i = 0; i < L.size(); ++i) { L[i] *= g; R[i] *= g; }
@@ -385,7 +379,6 @@ inline SpatialChainStats apply_spatial_chain(
         limit_stereo_float(L, R, sr, cfg.ceiling, cfg.lookahead_s,
                            cfg.release_s, &st.max_gain_reduction_db);
     }
-    // LimitMode::None: nada
 
     // 5) quantizacao final
     size_t outn = L.size();
