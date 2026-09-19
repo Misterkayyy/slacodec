@@ -66,8 +66,7 @@ public:
                     float slew_rate_per_sec,
                     uint32_t sample_rate)
         : base_(base_value),
-          slew_delta_(slew_rate_per_sec / static_cast<float>(sample_rate)),
-          sr_(sample_rate)
+          slew_delta_(slew_rate_per_sec / static_cast<float>(sample_rate))
     {
         for (const auto& kf : keyframes) {
             if (kf.param_id == param_id) {
@@ -118,7 +117,6 @@ private:
     float base_;
     float slew_delta_;
     float current_;
-    uint32_t sr_;
 };
 
 inline void widen_float(std::vector<float>& L, std::vector<float>& R, float w) {

@@ -13,6 +13,10 @@
 #include <slac/dsp/wav_loader.hpp>
 #include <slac/dsp/analyzer.hpp>
 #include <slac/dsp/spatial_chain.hpp>
+#include "slac/rt/realtime_player.hpp"
+#include "slac/rt/audio_engine.hpp"
+#include <chrono>
+#include <thread>
 
 #include <algorithm>
 #include <cmath>
@@ -564,6 +568,94 @@ static int cmd_decode(int argc, char** argv) {
     return 0;
 }
 
+static int cmd_play(int argc, char** argv) {
+    if (argc < 3) {
+        std::cerr << "Usage: slacodec-cli play <input.slac> [options]\n";
+        return 1;
+    }
+
+    using LM = slac::dsp::SpatialChainConfig::LimitMode;
+
+    std::string input_path = argv[2];
+    bool spatial          = has_flag(argc, argv, "--spatial");
+    bool partitioned_conv = has_flag(argc, argv, "--partitioned");
+    std::string hrir_path = get_opt(argc, argv, "--hrir", "");
+    std::string ir_path   = get_opt(argc, argv, "--ir", "");
+
+    slac::dsp::SpatialChainConfig cfg;
+    cfg.wideness = 1.0f;
+    cfg.limit_mode = LM::Limit;
+    cfg.ceiling = 0.988f;
+    cfg.use_partitioned_conv = partitioned_conv;
+    cfg.conv_block_size = 128;
+    cfg.use_auto = false;
+
+    // Carrega HRIR se fornecido.
+    slac::dsp::TrueStereoIR hrir;
+    if (spatial && !hrir_path.empty()) {
+        try {
+            slac::dsp::WavData hw = slac::dsp::load_wav(hrir_path);
+            auto chs = hw.channels();
+            hrir.sample_rate = hw.sample_rate;
+            if (chs.size() >= 4) {
+                hrir.ll = chs[0]; hrir.lr = chs[1];
+                hrir.rl = chs[2]; hrir.rr = chs[3];
+            } else if (chs.size() == 2) {
+                hrir.ll = chs[0]; hrir.rr = chs[1];
+                hrir.lr.assign(chs[0].size(), 0.0f);
+                hrir.rl.assign(chs[1].size(), 0.0f);
+            }
+            cfg.hrir = &hrir;
+            cfg.hrir_unity_gain = true;
+            cfg.wideness = 1.25f;
+            std::cout << "    HRIR:     " << hrir_path << "\n";
+        } catch (const std::exception& e) {
+            std::cerr << "Error loading HRIR: " << e.what() << "\n";
+            return 1;
+        }
+    } else if (spatial) {
+        cfg.wideness = 1.25f;
+    }
+
+    // Abre o player.
+    slac::rt::RealtimePlayer player;
+    if (!player.open(input_path, cfg, 128)) {
+        std::cerr << "Error: cannot open: " << input_path << "\n";
+        return 1;
+    }
+
+    std::cout << "Playing: " << input_path << "\n";
+    std::cout << "  sample_rate: " << player.sample_rate()
+              << "  channels: " << static_cast<int>(player.channels())
+              << "  total: " << player.total_samples() << " samples\n";
+
+    // Engine de áudio.
+    slac::rt::AudioEngine engine;
+    if (!engine.start(player.sample_rate(), player.channels(), 128, &player)) {
+        std::cerr << "Error: failed to start AAudio engine\n";
+        return 1;
+    }
+
+    player.start();
+    if (!engine.play()) {
+        std::cerr << "Error: failed to start playback\n";
+        player.stop();
+        return 1;
+    }
+
+    std::cout << "Playback started (AAudio low-latency). Ctrl+C to stop.\n";
+
+    while (!player.finished()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    engine.stop();
+    player.stop();
+    std::cout << "Playback finished.\n";
+    return 0;
+}
+
 // ──────────────────────────────────────────────────────────────
 // VERIFY (bit-exact + SHA-256)
 // ──────────────────────────────────────────────────────────────
@@ -890,6 +982,7 @@ int main(int argc, char** argv) {
     try {
         if (command == "encode") return cmd_encode(argc, argv);
         if (command == "decode") return cmd_decode(argc, argv);
+	else if (command == "play") return cmd_play(argc, argv);
         if (command == "info")   return cmd_info(argc, argv);
         if (command == "verify") return cmd_verify(argc, argv);
         if (command == "gen")    return cmd_gen(argc, argv);

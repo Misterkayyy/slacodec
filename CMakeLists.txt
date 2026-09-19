@@ -71,9 +71,15 @@ add_executable(slac_realtime_player_smoke
     tests/realtime_player_smoke.cpp
 )
 
+
 # ── CLI ───────────────────────────────────────────────────────
 add_executable(slacodec-cli
     src/slac/cli/main.cpp
+)
+# Força API 26+ para o CLI (AAudio requer API 26).
+set_target_properties(slacodec-cli PROPERTIES
+    CXX_STANDARD 17
+    COMPILE_FLAGS "--target=aarch64-linux-android26"
 )
 
 foreach(target IN ITEMS
@@ -109,6 +115,12 @@ foreach(target IN ITEMS
     endif()
 endforeach()
 
+# Linkagem específica do CLI (AAudio + pthread).
+target_link_libraries(slacodec-cli PRIVATE
+    /system/lib64/libaaudio.so
+    pthread
+)
+
 option(SLAC_ENABLE_SANITIZERS "Enable ASan and UBSan" OFF)
 option(SLAC_BUILD_FUZZER "Build libFuzzer target (requires clang)" OFF)
 if(SLAC_BUILD_FUZZER)
@@ -126,14 +138,14 @@ if(SLAC_ENABLE_SANITIZERS AND NOT MSVC)
         slac_reverb_registry_smoke
         slac_reverb_conv_smoke
         slacodec-cli
-	slac_fuzz_smoke
-	slac_fdn_smoke
-	slac_auto_chunk_smoke
-	slac_partitioned_conv_smoke
-	slac_ring_buffer_smoke
-	slac_streaming_decoder_smoke
+        slac_fuzz_smoke
+        slac_fdn_smoke
+        slac_auto_chunk_smoke
+        slac_partitioned_conv_smoke
+        slac_ring_buffer_smoke
+        slac_streaming_decoder_smoke
         slac_block_processor_smoke
-	slac_realtime_player_smoke
+        slac_realtime_player_smoke
     )
         target_compile_options(${target} PRIVATE
             -fsanitize=address,undefined
