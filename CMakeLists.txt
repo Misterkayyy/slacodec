@@ -63,6 +63,10 @@ add_executable(slac_streaming_decoder_smoke
     tests/streaming_decoder_smoke.cpp
 )
 
+add_executable(slac_block_processor_smoke
+    tests/block_processor_smoke.cpp
+)
+
 # ── CLI ───────────────────────────────────────────────────────
 add_executable(slacodec-cli
     src/slac/cli/main.cpp
@@ -83,6 +87,7 @@ foreach(target IN ITEMS
     slac_partitioned_conv_smoke
     slac_ring_buffer_smoke
     slac_streaming_decoder_smoke
+    slac_block_processor_smoke
 )
     target_include_directories(${target} PRIVATE
         ${CMAKE_SOURCE_DIR}/src
@@ -122,6 +127,7 @@ if(SLAC_ENABLE_SANITIZERS AND NOT MSVC)
 	slac_partitioned_conv_smoke
 	slac_ring_buffer_smoke
 	slac_streaming_decoder_smoke
+        slac_block_processor_smoke
     )
         target_compile_options(${target} PRIVATE
             -fsanitize=address,undefined
