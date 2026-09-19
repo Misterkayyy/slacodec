@@ -157,6 +157,15 @@ public:
             }
         }
 
+        // 3.5. Makeup gain (aplicado apenas com HRIR).
+        if (cfg_.makeup_gain_db != 0.0f && cfg_.hrir != nullptr) {
+            const float makeup = std::pow(10.0f, cfg_.makeup_gain_db / 20.0f);
+            for (size_t i = 0; i < block_size_; ++i) {
+                outL[i] *= makeup;
+                outR[i] *= makeup;
+            }
+        }
+
         // 4. Limiter (clip em ceiling).
         if (cfg_.limit_mode == dsp::SpatialChainConfig::LimitMode::Limit) {
             for (size_t i = 0; i < block_size_; ++i) {

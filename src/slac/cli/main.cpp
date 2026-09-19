@@ -571,6 +571,11 @@ static int cmd_decode(int argc, char** argv) {
 static int cmd_play(int argc, char** argv) {
     if (argc < 3) {
         std::cerr << "Usage: slacodec-cli play <input.slac> [options]\n";
+        std::cerr << "Options:\n";
+        std::cerr << "  --spatial              Apply spatial chain\n";
+        std::cerr << "  --hrir <path>          True-stereo HRIR (auto enables spatial)\n";
+        std::cerr << "  --partitioned          Use partitioned convolver (default for playback)\n";
+        std::cerr << "  --makeup-db <N>        Boost volume post-chain (e.g. 3, 6, 9 dB)\n";
         return 1;
     }
 
@@ -589,6 +594,7 @@ static int cmd_play(int argc, char** argv) {
     cfg.use_partitioned_conv = partitioned_conv;
     cfg.conv_block_size = 128;
     cfg.use_auto = false;
+    cfg.makeup_gain_db = static_cast<float>(get_opt_int(argc, argv, "--makeup-db", 6));
 
     // Carrega HRIR se fornecido.
     slac::dsp::TrueStereoIR hrir;
@@ -615,6 +621,10 @@ static int cmd_play(int argc, char** argv) {
         }
     } else if (spatial) {
         cfg.wideness = 1.25f;
+    }
+
+    if (cfg.makeup_gain_db != 0.0f && cfg.hrir != nullptr) {
+        std::cout << "  Makeup gain: " << cfg.makeup_gain_db << " dB\n";
     }
 
     // Abre o player.

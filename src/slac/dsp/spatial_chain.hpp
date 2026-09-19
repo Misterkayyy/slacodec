@@ -32,6 +32,7 @@ struct SpatialChainConfig {
     enum class LimitMode { Limit, Normalize, Loudness, None };
     LimitMode limit_mode = LimitMode::Normalize;
     float ceiling     = 0.988f;
+    float makeup_gain_db = 6.0f;
     float lookahead_s = 0.008f;
     float release_s   = 0.120f;
 
@@ -338,6 +339,15 @@ inline SpatialChainStats apply_spatial_chain(
         for (size_t i = 0; i < m; ++i) {
             L[i] += wL[i];
             R[i] += wR[i];
+        }
+    }
+
+    // 3.5) Makeup gain (aplicado apenas com HRIR, que atenua via unity_gain)
+        if (cfg.makeup_gain_db != 0.0f && cfg.hrir != nullptr) {
+        const float makeup = std::pow(10.0f, cfg.makeup_gain_db / 20.0f);
+        for (size_t i = 0; i < L.size(); ++i) {
+            L[i] *= makeup;
+            R[i] *= makeup;
         }
     }
 
