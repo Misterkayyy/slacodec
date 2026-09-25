@@ -28,23 +28,46 @@ A lossless audio codec with **integrated spatial processing** and **real-time pl
 
 ## Benchmark Results
 
-Tested on Termux (Android, ARM64), 3 tracks, 48kHz stereo:
+Tested on Termux (Android, ARM64, quad-core), 3 tracks, 48kHz stereo:
 
-| Track | Duration | SLAC Size | FLAC Size | Opus 128k |
-|-------|----------|-----------|-----------|-----------|
-| Raya (electronic) | 1m38s | 73.2% | 72.7% | 8.5% |
-| Loser (psych-rock) | 3m43s | 56.5% | 56.1% | 8.6% |
-| C&C (dance 90s) | 4m04s | 70.2% | 69.6% | 8.3% |
+### Compression Ratio
 
-**SLAC achieves compression parity with FLAC** (~0.5% difference average) while adding spatial metadata, HRIR support, and real-time playback that FLAC doesn't provide.
+| Track | Duration | WAV Size | SLAC Extreme | FLAC -8 | Opus 128k |
+|-------|----------|----------|--------------|---------|-----------|
+| Raya (electronic) | 1m38s | 19 MB | 14 MB (73.7%) | 13 MB (68.4%) | 1.5 MB (8.5%) |
+| Loser (psych-rock) | 3m43s | 42 MB | 22 MB (52.4%) | 22 MB (52.4%) | 3.5 MB (8.6%) |
+| C&C (dance 90s) | 4m04s | 46 MB | 32 MB (69.6%) | 31 MB (67.4%) | 3.7 MB (8.3%) |
 
-| Operation | SLAC | FLAC | Opus |
-|-----------|------|------|------|
-| Encode speed | 2-5 MB/s | 25-30 MB/s | 10-15 MB/s |
-| Decode speed | 5-10 MB/s | 25-30 MB/s | 10-15 MB/s |
-| Realtime playback | 21x RT | N/A | N/A |
+**SLAC Extreme achieves compression within 2-5% of FLAC -8** (maximum compression level) while adding spatial metadata, HRIR support, and real-time playback that FLAC doesn't provide.
 
-SLAC encode is slower than FLAC due to adaptive decorrelation and spatial analysis, but this is one-time. Decode is still 21x realtime — plenty of headroom for lossless playback.
+- **Loser**: identical compression (52.4%)
+- **C&C**: 2.2% larger than FLAC -8
+- **Raya**: 5.3% larger than FLAC -8
+
+The difference is small and acceptable considering FLAC has 20+ years of optimization with hand-tuned assembly, while SLAC adds spatial processing capabilities.
+
+### Encoding Performance
+
+With parallelization across 4 threads on ARM64 quad-core:
+
+| Track | SLAC Extreme (parallel) | FLAC -8 | Speedup vs sequential |
+|-------|------------------------|---------|----------------------|
+| Raya | 4.1s | 0.73s | 2.4x |
+| Loser | 8.6s | 1.62s | 2.4x |
+| C&C | 9.9s | 1.78s | 2.4x |
+
+SLAC encode is ~5x slower than FLAC due to adaptive decorrelation, spatial analysis, and higher LPC order (16 vs FLAC's optimized predictors). However, encoding is one-time, and the 2.4x parallelization speedup makes it practical for batch processing.
+
+### Real-time Playback
+
+| Metric | Value |
+|--------|-------|
+| Decode throughput | 21x realtime |
+| Spatial processing latency | <3ms (128-sample blocks) |
+| HRIR convolution | Partitioned (FFT-based) |
+| Lock-free audio callback | Yes (SPSC ring buffer) |
+
+Decode speed is 21x realtime — more than enough headroom for lossless playback with spatial processing on mid-range Android devices.
 
 ## Usage
 
