@@ -239,33 +239,43 @@ private:
     }
 
     void parse_spat_chunk(const uint8_t* data, size_t size) {
-        if (size < 4) return;
+        if (size < 10) return;
         size_t p = 0;
-        if (size >= 4) { spat_.wideness_permille = readU32LE(data + p); p += 4; }
-        if (size >= 8) { spat_.reverb_wet_pct = static_cast<uint8_t>(readU32LE(data + p)); p += 4; }
-        if (size >= 12) { spat_.preset_id = static_cast<uint8_t>(readU32LE(data + p)); p += 4; }
-        if (size >= 16) { spat_.flags = static_cast<uint8_t>(readU32LE(data + p)); p += 4; }
-        if (size >= 20) { spat_.fallback_category = static_cast<uint8_t>(readU32LE(data + p)); p += 4; }
-        if (size >= 24) { spat_.fallback_size = static_cast<uint8_t>(readU32LE(data + p)); p += 4; }
-        if (size >= 28) { spat_.fallback_decay = static_cast<uint8_t>(readU32LE(data + p)); p += 4; }
-        if (size >= 32) { spat_.reserved = static_cast<uint8_t>(readU32LE(data + p)); p += 4; }
+        
+        // wideness_permille: uint16_t little-endian (2 bytes)
+        spat_.wideness_permille = static_cast<uint16_t>(data[p]) | 
+                                  (static_cast<uint16_t>(data[p + 1]) << 8);
+        p += 2;
+        
+        // reverb_wet_pct: uint8_t (1 byte)
+        spat_.reverb_wet_pct = data[p++];
+        
+        // preset_id: uint8_t (1 byte)
+        spat_.preset_id = data[p++];
+        
+        // flags: uint8_t (1 byte)
+        spat_.flags = data[p++];
+        
+        // chain_order: uint8_t (1 byte)
+        spat_.chain_order = data[p++];
+        
+        // fallback_category: uint8_t (1 byte)
+        spat_.fallback_category = data[p++];
+        
+        // fallback_size: uint8_t (1 byte)
+        spat_.fallback_size = data[p++];
+        
+        // fallback_decay: uint8_t (1 byte)
+        spat_.fallback_decay = data[p++];
+        
+        // reserved: uint8_t (1 byte)
+        spat_.reserved = data[p++];
     }
 
     void parse_auto_chunk(const uint8_t* data, size_t size) {
-        if (size < 12) return;
-        size_t p = 0;
-        uint8_t version = static_cast<uint8_t>(readU32LE(data + p)); p += 4;
-        uint8_t reserved = static_cast<uint8_t>(readU32LE(data + p)); p += 4;
-        uint32_t keyframe_count = readU32LE(data + p); p += 4;
-        (void)version; (void)reserved;
-        auto_keyframes_.resize(keyframe_count);
-        for (uint32_t i = 0; i < keyframe_count; ++i) {
-            if (p + 12 > size) { auto_keyframes_.resize(i); return; }
-            auto_keyframes_[i].sample_offset = readU32LE(data + p); p += 4;
-            auto_keyframes_[i].param_id = static_cast<uint8_t>(readU32LE(data + p)); p += 4;
-            float val = 0.0f;
-            std::memcpy(&val, data + p, 4); p += 4;
-            auto_keyframes_[i].value = val;
+        auto_keyframes_.clear();
+        if (!core::auto_chunk_parse(data, size, auto_keyframes_)) {
+            auto_keyframes_.clear();
         }
     }
 

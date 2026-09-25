@@ -112,6 +112,18 @@ public:
     uint64_t total_samples() const { return decoder_.total_samples(); }
     size_t block_size() const { return block_size_; }
 
+    // Expor metadados espaciais do arquivo (lidos pelo StreamingDecoder)
+    const slac::SpatMetadata& spat() const { return decoder_.spat(); }
+    const std::vector<slac::core::AutoKeyframe>& auto_keyframes() const {
+        return decoder_.auto_keyframes();
+    }
+
+    // Reconfigurar a spatial chain após abrir (pra usar metadados do arquivo)
+    void reconfigure(const dsp::SpatialChainConfig& cfg) {
+        cfg_ = cfg;
+        processor_.configure(cfg, decoder_.sample_rate(), block_size_);
+    }
+
 private:
     void producer_loop() {
         std::vector<std::vector<int32_t>> pcm_chunk;

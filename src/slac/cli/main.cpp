@@ -15,6 +15,7 @@
 #include <slac/dsp/spatial_chain.hpp>
 #include "slac/rt/realtime_player.hpp"
 #include "slac/rt/audio_engine.hpp"
+#include "slac/dsp/fdn_reverb.hpp"
 #include <chrono>
 #include <thread>
 
@@ -572,10 +573,13 @@ static int cmd_play(int argc, char** argv) {
     if (argc < 3) {
         std::cerr << "Usage: slacodec-cli play <input.slac> [options]\n";
         std::cerr << "Options:\n";
-        std::cerr << "  --spatial              Apply spatial chain\n";
-        std::cerr << "  --hrir <path>          True-stereo HRIR (auto enables spatial)\n";
+        std::cerr << "  --spatial              Apply spatial chain (auto-reads file metadata)\n";
+        std::cerr << "  --hrir <path>          True-stereo HRIR (overrides default)\n";
+        std::cerr << "  --ir <path>            Convolution reverb IR\n";
         std::cerr << "  --partitioned          Use partitioned convolver (default for playback)\n";
-        std::cerr << "  --makeup-db <N>        Boost volume post-chain (e.g. 3, 6, 9 dB)\n";
+        std::cerr << "  --makeup-db <N>        Volume boost post-chain (default 6 dB with HRIR)\n";
+        std::cerr << "  --no-auto              Disable automation keyframes\n";
+        std::cerr << "  --limit-mode <mode>    limit|normalize|loudness|none (default normalize)\n";
         return 1;
     }
 
@@ -584,50 +588,14 @@ static int cmd_play(int argc, char** argv) {
     std::string input_path = argv[2];
     bool spatial          = has_flag(argc, argv, "--spatial");
     bool partitioned_conv = has_flag(argc, argv, "--partitioned");
+    bool no_auto          = has_flag(argc, argv, "--no-auto");
     std::string hrir_path = get_opt(argc, argv, "--hrir", "");
     std::string ir_path   = get_opt(argc, argv, "--ir", "");
 
+    // Config inicial (só pra abrir o player - será substituída pelos metadados)
     slac::dsp::SpatialChainConfig cfg;
-    cfg.wideness = 1.0f;
-    cfg.limit_mode = LM::Limit;
-    cfg.ceiling = 0.988f;
-    cfg.use_partitioned_conv = partitioned_conv;
-    cfg.conv_block_size = 128;
-    cfg.use_auto = false;
-    cfg.makeup_gain_db = static_cast<float>(get_opt_int(argc, argv, "--makeup-db", 6));
 
-    // Carrega HRIR se fornecido.
-    slac::dsp::TrueStereoIR hrir;
-    if (spatial && !hrir_path.empty()) {
-        try {
-            slac::dsp::WavData hw = slac::dsp::load_wav(hrir_path);
-            auto chs = hw.channels();
-            hrir.sample_rate = hw.sample_rate;
-            if (chs.size() >= 4) {
-                hrir.ll = chs[0]; hrir.lr = chs[1];
-                hrir.rl = chs[2]; hrir.rr = chs[3];
-            } else if (chs.size() == 2) {
-                hrir.ll = chs[0]; hrir.rr = chs[1];
-                hrir.lr.assign(chs[0].size(), 0.0f);
-                hrir.rl.assign(chs[1].size(), 0.0f);
-            }
-            cfg.hrir = &hrir;
-            cfg.hrir_unity_gain = true;
-            cfg.wideness = 1.25f;
-            std::cout << "    HRIR:     " << hrir_path << "\n";
-        } catch (const std::exception& e) {
-            std::cerr << "Error loading HRIR: " << e.what() << "\n";
-            return 1;
-        }
-    } else if (spatial) {
-        cfg.wideness = 1.25f;
-    }
-
-    if (cfg.makeup_gain_db != 0.0f && cfg.hrir != nullptr) {
-        std::cout << "  Makeup gain: " << cfg.makeup_gain_db << " dB\n";
-    }
-
-    // Abre o player.
+    // Abre o player (lê spat + auto chunks do arquivo internamente)
     slac::rt::RealtimePlayer player;
     if (!player.open(input_path, cfg, 128)) {
         std::cerr << "Error: cannot open: " << input_path << "\n";
@@ -639,7 +607,112 @@ static int cmd_play(int argc, char** argv) {
               << "  channels: " << static_cast<int>(player.channels())
               << "  total: " << player.total_samples() << " samples\n";
 
-    // Engine de áudio.
+	if (spatial && player.channels() == 2) {
+        std::cout << "  Applying spatial DSP...\n";
+
+        slac::dsp::SpatialChainConfig cfg_spatial;
+        const auto& spat = player.spat();
+        const auto& auto_kfs = player.auto_keyframes();
+
+        // ── Automação espacial ──
+        if (!auto_kfs.empty() && !no_auto) {
+            cfg_spatial.auto_keyframes = auto_kfs;
+            cfg_spatial.use_auto = true;
+            std::cout << "    Auto:     " << auto_kfs.size()
+                      << " keyframes (wideness + reverb interpolation)\n";
+        } else if (!auto_kfs.empty() && no_auto) {
+            std::cout << "    Auto:     disabled (--no-auto)\n";
+        }
+
+        // Configuração base
+        cfg_spatial.wideness = spat.wideness_permille / 1000.0f;
+        cfg_spatial.mono_safe = (spat.flags & 0x02u) != 0u;
+        cfg_spatial.hrir_echo_trim = static_cast<float>(
+            get_opt_int(argc, argv, "--hrir-echo-trim", 100)) / 100.0f;
+        cfg_spatial.use_partitioned_conv = partitioned_conv;
+        cfg_spatial.conv_block_size = 128;
+        cfg_spatial.makeup_gain_db = static_cast<float>(
+            get_opt_int(argc, argv, "--makeup-db", 6));
+
+        // Limiter
+        std::string lm = get_opt(argc, argv, "--limit-mode", "normalize");
+        if (lm == "limit")         cfg_spatial.limit_mode = LM::Limit;
+        else if (lm == "loudness") cfg_spatial.limit_mode = LM::Loudness;
+        else if (lm == "none")     cfg_spatial.limit_mode = LM::None;
+        else                       cfg_spatial.limit_mode = LM::Normalize;
+        cfg_spatial.ceiling = 0.988f;
+
+        // ── HRIR (se fornecido) ──
+        slac::dsp::TrueStereoIR hrir;
+        if (!hrir_path.empty()) {
+            try {
+                slac::dsp::WavData hw = slac::dsp::load_wav(hrir_path);
+                auto chs = hw.channels();
+                hrir.sample_rate = hw.sample_rate;
+                if (chs.size() >= 4) {
+                    hrir.ll = chs[0]; hrir.lr = chs[1];
+                    hrir.rl = chs[2]; hrir.rr = chs[3];
+                } else if (chs.size() == 2) {
+                    hrir.ll = chs[0]; hrir.rr = chs[1];
+                    hrir.lr.assign(chs[0].size(), 0.0f);
+                    hrir.rl.assign(chs[1].size(), 0.0f);
+                }
+                cfg_spatial.hrir = &hrir;
+                cfg_spatial.hrir_unity_gain = true;
+                std::cout << "    HRIR:     " << hrir_path << "\n";
+                if (cfg_spatial.makeup_gain_db != 0.0f && cfg_spatial.hrir != nullptr) {
+                    std::cout << "    Makeup:   " << cfg_spatial.makeup_gain_db << " dB\n";
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Error loading HRIR: " << e.what() << "\n";
+                return 1;
+            }
+        }
+
+	// ── Wideness (sempre mostrar) ──
+        std::cout << "    Wideness: " << spat.wideness_permille / 10.0f << "%\n";
+
+        // ── Reverb (se houver preset > 0 no arquivo) ──
+        if (spat.preset_id > 0 && spat.reverb_wet_pct > 0) {
+            cfg_spatial.reverb_enabled = true;
+            cfg_spatial.reverb_adaptive = true;
+            cfg_spatial.reverb = slac::dsp::reverb_params_from_descriptors(
+                spat.fallback_category, spat.fallback_size, spat.fallback_decay,
+                static_cast<float>(spat.reverb_wet_pct));
+
+            slac::dsp::TrueStereoIR rir;
+            bool loaded_rir = false;
+            if (!ir_path.empty()) {
+                try {
+                    slac::dsp::WavData rw = slac::dsp::load_wav(ir_path);
+                    auto chs = rw.channels();
+                    rir.sample_rate = rw.sample_rate;
+                    if (chs.size() >= 4) {
+                        rir.ll = chs[0]; rir.lr = chs[1];
+                        rir.rl = chs[2]; rir.rr = chs[3];
+                    } else if (chs.size() == 2) {
+                        rir.ll = chs[0]; rir.rr = chs[1];
+                        rir.lr.assign(chs[0].size(), 0.0f);
+                        rir.rl.assign(chs[1].size(), 0.0f);
+                    }
+                    cfg_spatial.reverb_ir = &rir;
+                    loaded_rir = true;
+                } catch (...) {}
+            }
+
+            std::cout << "    Reverb:   preset=" << static_cast<int>(spat.preset_id)
+                      << " wet=" << static_cast<int>(spat.reverb_wet_pct) << "%"
+                      << " engine=" << (loaded_rir ? "IR convolution" : "FDN synth")
+                      << "\n";
+        } else {
+            std::cout << "    Reverb:   skipped (preset=0 or wet=0)\n";
+        }
+
+        // Aplica a configuração espacial
+        player.reconfigure(cfg_spatial);
+    }
+
+    // Engine de áudio
     slac::rt::AudioEngine engine;
     if (!engine.start(player.sample_rate(), player.channels(), 128, &player)) {
         std::cerr << "Error: failed to start AAudio engine\n";
