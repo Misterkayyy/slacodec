@@ -13,6 +13,8 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
+#include <thread>
+#include <algorithm>
 
 namespace slac {
 
@@ -196,53 +198,99 @@ inline std::vector<uint8_t> encodeSlacFile(
     hash_payload.push_back(0); // layout: planar int32 LE
     hash_payload.insert(hash_payload.end(), digest.begin(), digest.end());
 
-    // ── Frames ──────────────────────────────────────────────
+    // ── Frames (paralelizado em múltiplos threads) ─────────────
+    // Determinar número de threads (2-4 em Android quad-core)
+    const unsigned int num_threads = std::min(
+        4u,
+        std::max(1u, std::thread::hardware_concurrency()));
+
+    // Estrutura para armazenar resultado de cada thread
+    struct ThreadResult {
+        std::vector<uint8_t> bytes;
+        std::vector<uint32_t> offsets;
+    };
+
+    std::vector<ThreadResult> results(num_threads);
+    std::vector<std::thread> threads;
+
+    // Frames por thread (divisão equilibrada)
+    const uint32_t frames_per_thread = (num_frames + num_threads - 1) / num_threads;
+
+    for (unsigned int t = 0; t < num_threads; ++t) {
+        uint32_t start_frame = t * frames_per_thread;
+        uint32_t end_frame = std::min(start_frame + frames_per_thread, num_frames);
+
+        if (start_frame >= num_frames) break;
+
+        threads.emplace_back([&, t, start_frame, end_frame]() {
+            ThreadResult& result = results[t];
+            result.bytes.reserve(4096 * (end_frame - start_frame) * f.channelCount / 2);
+            result.offsets.reserve(end_frame - start_frame);
+
+            for (uint32_t fi = start_frame; fi < end_frame; ++fi) {
+                size_t start = static_cast<size_t>(fi) * frame_size;
+                size_t count = std::min(static_cast<size_t>(frame_size),
+                                        total_samples - start);
+
+                result.offsets.push_back(static_cast<uint32_t>(result.bytes.size()));
+
+                std::vector<std::vector<int32_t>> frame_streams;
+                StereoMode frame_mode = StereoMode::MidSide;
+
+                if (f.channelCount == 2) {
+                    std::vector<int32_t> frame_l(channels[0].begin() + start,
+                                                 channels[0].begin() + start + count);
+                    std::vector<int32_t> frame_r(channels[1].begin() + start,
+                                                 channels[1].begin() + start + count);
+
+                    if (adaptive)
+                        frame_mode = selectBestStereoMode(frame_l, frame_r);
+
+                    std::vector<int32_t> s0, s1;
+                    stereoEncode(frame_l, frame_r, frame_mode, s0, s1);
+
+                    frame_streams.push_back(std::move(s0));
+                    frame_streams.push_back(std::move(s1));
+                } else {
+                    frame_mode = StereoMode::LeftRight;
+                    frame_streams.push_back(std::vector<int32_t>(
+                        channels[0].begin() + start,
+                        channels[0].begin() + start + count));
+                }
+
+                int bps = f.bitsPerSample;
+                int s1bits = bps;
+                if (f.channelCount == 2 && frame_mode != StereoMode::LeftRight)
+                    s1bits = bps + 1;
+
+                auto frame_bytes = encode_frame(frame_streams, bps,
+                                                lpc_order, lpc_shift, frame_mode,
+                                                use_range_coding, s1bits);
+
+                result.bytes.insert(result.bytes.end(),
+                                    frame_bytes.begin(), frame_bytes.end());
+            }
+        });
+    }
+
+    // Aguardar todas as threads terminarem
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    // Concatenar resultados e calcular offsets globais
     std::vector<uint8_t> data_payload;
     std::vector<uint32_t> frame_offsets;
     frame_offsets.reserve(num_frames);
 
-    for (uint32_t fi = 0; fi < num_frames; ++fi) {
-        size_t start = static_cast<size_t>(fi) * frame_size;
-        size_t count = std::min(static_cast<size_t>(frame_size),
-                                total_samples - start);
-
-        frame_offsets.push_back(static_cast<uint32_t>(data_payload.size()));
-
-        std::vector<std::vector<int32_t>> frame_streams;
-        StereoMode frame_mode = StereoMode::MidSide;
-
-        if (f.channelCount == 2) {
-            std::vector<int32_t> frame_l(channels[0].begin() + start,
-                                         channels[0].begin() + start + count);
-            std::vector<int32_t> frame_r(channels[1].begin() + start,
-                                         channels[1].begin() + start + count);
-
-            if (adaptive)
-                frame_mode = selectBestStereoMode(frame_l, frame_r);
-
-            std::vector<int32_t> s0, s1;
-            stereoEncode(frame_l, frame_r, frame_mode, s0, s1);
-
-            frame_streams.push_back(std::move(s0));
-            frame_streams.push_back(std::move(s1));
-        } else {
-            frame_mode = StereoMode::LeftRight;
-            frame_streams.push_back(std::vector<int32_t>(
-                channels[0].begin() + start,
-                channels[0].begin() + start + count));
+    uint32_t cumulative_offset = 0;
+    for (const auto& result : results) {
+        for (uint32_t local_offset : result.offsets) {
+            frame_offsets.push_back(cumulative_offset + local_offset);
         }
-
-        int bps = f.bitsPerSample;
-        int s1bits = bps;
-        if (f.channelCount == 2 && frame_mode != StereoMode::LeftRight)
-            s1bits = bps + 1; // side precisa de 17 bits
-
-        auto frame_bytes = encode_frame(frame_streams, bps,
-                                        lpc_order, lpc_shift, frame_mode,
-                                        use_range_coding, s1bits);
-
         data_payload.insert(data_payload.end(),
-                            frame_bytes.begin(), frame_bytes.end());
+                            result.bytes.begin(), result.bytes.end());
+        cumulative_offset += static_cast<uint32_t>(result.bytes.size());
     }
 
     // Invariante: nunca emitir arquivo com audio nao-vazio e data vazio.

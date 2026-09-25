@@ -6,6 +6,14 @@
 #include <limits>
 #include <vector>
 
+// NEON SIMD para ARM64 (autocorrelação e prediction otimizados)
+#if defined(__ARM_NEON) && defined(__aarch64__)
+#include <arm_neon.h>
+#define SLAC_HAS_NEON 1
+#else
+#define SLAC_HAS_NEON 0
+#endif
+
 #include "rice.hpp"
 
 #ifndef M_PI
@@ -55,11 +63,45 @@ inline std::vector<double> autocorrelationDouble(
     int n = static_cast<int>(samples.size());
     int order = std::min(maxOrder, n > 0 ? n - 1 : 0);
     std::vector<double> r(order + 1, 0.0);
+
+#if SLAC_HAS_NEON
+    // ── Caminho NEON (AArch64): processa 2 doubles por iteração + FMA ──
+    const double* data = samples.data();
+    for (int lag = 0; lag <= order; ++lag) {
+        const int limit = n - lag;
+        const double* a_ptr = data;
+        const double* b_ptr = data + lag;
+        
+        // Vetor acumulador (2 lanes de double)
+        float64x2_t sum_vec = vdupq_n_f64(0.0);
+        
+        int i = 0;
+        // Loop principal: 2 amostras por vez
+        for (; i + 1 < limit; i += 2) {
+            float64x2_t a = vld1q_f64(a_ptr + i);
+            float64x2_t b = vld1q_f64(b_ptr + i);
+            sum_vec = vfmaq_f64(sum_vec, a, b);  // fused multiply-add
+        }
+        
+        // Reduzir vetor para escalar (horizontal sum)
+        double sum = vaddvq_f64(sum_vec);
+        
+        // Processar amostra residual (se limit é ímpar)
+        if (i < limit) {
+            sum += a_ptr[i] * b_ptr[i];
+        }
+        
+        r[lag] = sum;
+    }
+#else
+    // ── Fallback C++ (plataformas não-NEON) ──
     for (int lag = 0; lag <= order; ++lag) {
         double sum = 0.0;
         for (int i = 0; i < n - lag; ++i) sum += samples[i] * samples[i + lag];
         r[lag] = sum;
     }
+#endif
+
     return r;
 }
 
@@ -96,28 +138,29 @@ inline std::vector<std::vector<double>> levinsonDurbinAllOrders(
         }
         return results;
     }
+    
+    // Buffers pré-alocados (evita alocações dentro do loop)
     std::vector<double> a(maxOrder + 1, 0.0);
+    std::vector<double> a_prev(maxOrder + 1, 0.0);  // substitui "old"
     a[0] = 1.0;
     double e = r[0];
     int limit = std::min(maxOrder, static_cast<int>(r.size()) - 1);
+    
     for (int m = 1; m <= limit; ++m) {
         double num = -r[m];
         for (int i = 1; i < m; ++i) num -= a[i] * r[m - i];
         if (std::abs(e) < 1e-12) break;
         double k = num / e;
         if (!std::isfinite(k)) break;
-        std::vector<double> old = a;
-        for (int i = 1; i < m; ++i) a[i] = old[i] + k * old[m - i];
+        
+        // Swap de buffers (sem alocação)
+        for (int i = 1; i < m; ++i) a_prev[i] = a[i];
+        for (int i = 1; i < m; ++i) a[i] = a_prev[i] + k * a_prev[m - i];
         a[m] = k;
         e *= (1.0 - k * k);
+        
         results[m].assign(a.begin(), a.begin() + m + 1);
         if (e < 1e-12) break;
-    }
-    for (int m = 1; m <= maxOrder; ++m) {
-        if (results[m].empty()) {
-            results[m].assign(m + 1, 0.0);
-            results[m][0] = 1.0;
-        }
     }
     return results;
 }

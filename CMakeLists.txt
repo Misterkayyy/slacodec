@@ -112,6 +112,13 @@ foreach(target IN ITEMS
             -Wextra
             -Wpedantic
         )
+        # ── Otimizações NEON SIMD em ARM64 (autocorrelação + LPC) ──
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+            target_compile_options(${target} PRIVATE
+                -O3
+                -funroll-loops
+            )
+        endif()
     endif()
 endforeach()
 
