@@ -2,7 +2,8 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
     paths:
       - 'app-android/**'
       - 'src/slac/**'
@@ -11,35 +12,26 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-<<<<<<< HEAD
-        cache: gradle
-        
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
-      working-directory: app-android
-=======
-        
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
->>>>>>> d851237 (feat: Add complete Android project structure (Gradle, resources, icons, theme))
-      
-    - name: Build Debug APK
-      run: gradle assembleDebug --no-daemon
-      working-directory: app-android
-      
-    - name: Upload APK artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: slacodec-app-debug
-        path: app-android/app/build/outputs/apk/debug/app-debug.apk
-        retention-days: 30
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Build Debug APK
+        run: gradle assembleDebug --no-daemon
+        working-directory: app-android
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: slacodec-app-debug
+          path: app-android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
