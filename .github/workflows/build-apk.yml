@@ -21,14 +21,20 @@ jobs:
       with:
         java-version: '17'
         distribution: 'temurin'
+<<<<<<< HEAD
         cache: gradle
         
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
       working-directory: app-android
+=======
+        
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+>>>>>>> d851237 (feat: Add complete Android project structure (Gradle, resources, icons, theme))
       
     - name: Build Debug APK
-      run: ./gradlew assembleDebug --no-daemon
+      run: gradle assembleDebug --no-daemon
       working-directory: app-android
       
     - name: Upload APK artifact
