@@ -9,14 +9,14 @@ android {
 
     defaultConfig {
         applicationId = "com.slacodec.app"
-        minSdk = 26 // AAudio requer API 26+
+        minSdk = 26
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
         ndk {
-            abiFilters += "arm64-v8a" // Foca no ARM64 para o NEON SIMD
+            abiFilters += "arm64-v8a"
         }
     }
 
@@ -44,7 +44,6 @@ android {
         kotlinCompilerExtensionVersion = "1.5.8"
     }
 
-    // Configuração do NDK / CMake
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
@@ -54,9 +53,9 @@ android {
 }
 
 dependencies {
-    // Compose BOM
     val composeBom = platform("androidx.compose:compose-bom:2024.02.00")
     implementation(composeBom)
+    androidTestImplementation(composeBom)
     
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
@@ -66,12 +65,10 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
 
-    // ExoPlayer (Media3) para formatos universais
     val media3Version = "1.2.1"
     implementation("androidx.media3:media3-exoplayer:$media3Version")
     implementation("androidx.media3:media3-ui:$media3Version")
     implementation("androidx.media3:media3-common:$media3Version")
 
-    // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }
