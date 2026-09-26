@@ -14,4 +14,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "SLACodec"
-include(":app")
+include(":app") // <-- Esta linha é a mágica que faltava!
