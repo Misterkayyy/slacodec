@@ -2,14 +2,15 @@ package com.slacodec.app.codec
 
 class SlacodecJni {
     companion object {
-        init {
-            System.loadLibrary("slacodec_jni")
-        }
+        init { System.loadLibrary("slacodec_jni") }
     }
 
-    // Método de teste para validar que o JNI está funcionando
-    external fun getVersion(): String
-    
-    // Método de teste de carregamento
-    external fun testLoad(filePath: String): Boolean
+    external fun nativeCreate(): Long
+    external fun nativeOpen(handle: Long, path: String): Boolean
+    external fun nativePlay(handle: Long): Boolean
+    external fun nativeStop(handle: Long)
+    external fun nativeSetWideness(handle: Long, wideness: Float)
+    external fun nativeSetReverbWet(handle: Long, wet: Float)
+    external fun nativeGetDurationMs(handle: Long): Long
+    external fun nativeRelease(handle: Long)
 }

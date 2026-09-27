@@ -8,41 +8,72 @@ import java.io.FileOutputStream
 
 class SlacPlayer(private val context: Context) : Player {
     private val jni = SlacodecJni()
-    private var cachedFile: File? = null
+    private var handle: Long = 0L
+    private var cachedPath: String? = null
+    private var started = false
+    private var stopped = false
     override var onPlaybackStateChanged: ((Boolean) -> Unit)? = null
-    
+
     fun loadFile(uriString: String): Boolean {
-        return try {
-            val uri = Uri.parse(uriString)
-            // Copia o arquivo da URI para o cache interno do app
-            cachedFile = copyUriToCache(uri)
-            // Passa o CAMINHO REAL do arquivo para o C++ (não a URI!)
-            jni.testLoad(cachedFile!!.absolutePath)
-        } catch (e: Exception) {
-            false
+        releaseNative()
+        handle = jni.nativeCreate()
+        cachedPath = copyUriToCache(Uri.parse(uriString))
+        val ok = jni.nativeOpen(handle, cachedPath!!)
+        started = false
+        stopped = false
+        return ok
+    }
+
+    override fun play() {
+        if (handle == 0L || cachedPath == null) return
+        if (stopped) {
+            jni.nativeRelease(handle)
+            handle = jni.nativeCreate()
+            jni.nativeOpen(handle, cachedPath!!)
+            stopped = false
+        }
+        if (!started) {
+            started = jni.nativePlay(handle)
+            onPlaybackStateChanged?.invoke(started)
         }
     }
-    
-    private fun copyUriToCache(uri: Uri): File {
-        // Cria um arquivo único no cache para cada música
-        val cachedFile = File(context.cacheDir, "current.slac")
-        if (cachedFile.exists()) cachedFile.delete()
-        
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            FileOutputStream(cachedFile).use { output ->
-                input.copyTo(output)
-            }
+
+    override fun pause() {
+        if (started) {
+            jni.nativeStop(handle)
+            started = false
+            stopped = true
+            onPlaybackStateChanged?.invoke(false)
         }
-        return cachedFile
     }
-    
-    override fun play() { onPlaybackStateChanged?.invoke(true) }
-    override fun pause() { onPlaybackStateChanged?.invoke(false) }
-    override fun release() { 
-        cachedFile?.delete()
-    }
-    
+
+    override fun release() = releaseNative()
+
     fun setSpatialParams(wideness: Float, reverbWet: Float) {
-        // TODO: Conectar ao C++ real
+        if (handle != 0L) {
+            jni.nativeSetWideness(handle, wideness)
+            jni.nativeSetReverbWet(handle, reverbWet)
+        }
+    }
+
+    fun getDurationMs(): Long = if (handle != 0L) jni.nativeGetDurationMs(handle) else 0L
+
+    private fun releaseNative() {
+        if (handle != 0L) {
+            jni.nativeStop(handle)
+            jni.nativeRelease(handle)
+            handle = 0L
+        }
+        started = false
+        stopped = false
+    }
+
+    private fun copyUriToCache(uri: Uri): String {
+        val f = File(context.cacheDir, "current.slac")
+        if (f.exists()) f.delete()
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            FileOutputStream(f).use { out -> input.copyTo(out) }
+        } ?: throw IllegalStateException("Nao foi possivel abrir a URI")
+        return f.absolutePath
     }
 }
