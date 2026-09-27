@@ -6,10 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(slacodec_jni SHARED slacodec_jni.cpp)
 
-# À PROVA DE FALHAS: Adiciona ambos os caminhos possíveis de include
+# CAMINHO CORRIGIDO: 5 níveis para subir até a raiz do projeto (slacodec)
+# cpp -> main -> src -> app -> app-android -> slacodec (raiz)
 target_include_directories(slacodec_jni PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../../../src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../../../src/slac
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../src
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../src/slac
 )
 
 if(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
