@@ -6,8 +6,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(slacodec_jni SHARED slacodec_jni.cpp)
 
-# O CAMINHO MÁGICO: Aponta para src/slac, permitindo #include "rt/realtime_player.hpp"
+# À PROVA DE FALHAS: Adiciona ambos os caminhos possíveis de include
 target_include_directories(slacodec_jni PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../../src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../../src/slac
 )
 
