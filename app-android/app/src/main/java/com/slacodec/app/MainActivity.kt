@@ -1,101 +1,137 @@
 package com.slacodec.app
 
-import android.net.Uri
+import android.Manifest
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
+import com.slacodec.app.model.Track
+import com.slacodec.app.library.LibraryScanner
 import com.slacodec.app.playback.PlayerManager
 import com.slacodec.app.playback.SlacPlayer
+import com.slacodec.app.ui.LibraryScreen
+import com.slacodec.app.ui.PlayerScreen
 import com.slacodec.app.ui.SlacodecTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            SlacodecTheme { MainScreen() }
-        }
+        setContent { SlacodecTheme { App() } }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen() {
-    val context = LocalContext.current
+fun App() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
     val playerManager = remember { PlayerManager(context) }
 
-    var currentFileName by remember { mutableStateOf<String?>(null) }
+    var hasPermission by remember { mutableStateOf(false) }
+    var tracks by remember { mutableStateOf<List<Track>>(emptyList()) }
+    var currentIndex by remember { mutableStateOf<Int?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
+    var position by remember { mutableStateOf(0L) }
+    var art by remember { mutableStateOf<Bitmap?>(null) }
     var wideness by remember { mutableStateOf(1.0f) }
     var reverbWet by remember { mutableStateOf(0.2f) }
 
-    // OpenDocument aceita MULTIPLOS MIME types (audio/* + binarios .slac)
-    val filePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        uri?.let {
-            currentFileName = it.lastPathSegment?.substringAfterLast('/') ?: "Audio"
-            playerManager.loadFile(context, it.toString())
+    val permLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> hasPermission = granted }
+
+    LaunchedEffect(Unit) {
+        permLauncher.launch(
+            if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO
+            else Manifest.permission.READ_EXTERNAL_STORAGE
+        )
+    }
+
+    // Scan da biblioteca
+    LaunchedEffect(hasPermission) {
+        if (!hasPermission) return@LaunchedEffect
+        tracks = withContext(Dispatchers.IO) { LibraryScanner.scan() }
+    }
+
+    // Polling de posicao
+    LaunchedEffect(currentIndex, isPlaying) {
+        while (isPlaying) {
+            position = playerManager.getCurrentPlayer()?.positionMs() ?: 0L
+            delay(500)
         }
     }
 
-    LaunchedEffect(currentFileName) {
-        playerManager.getCurrentPlayer()?.onPlaybackStateChanged = { playing -> isPlaying = playing }
-    }
-
+    // Sliders espaciais em tempo real
     LaunchedEffect(wideness, reverbWet) {
         (playerManager.getCurrentPlayer() as? SlacPlayer)?.setSpatialParams(wideness, reverbWet)
     }
 
-    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text("SLACodec Player", style = MaterialTheme.typography.headlineMedium)
-
-            Button(onClick = {
-                filePickerLauncher.launch(arrayOf("audio/*", "application/octet-stream"))
-            }) {
-                Text("Selecionar Arquivo de Audio")
-            }
-
-            currentFileName?.let { name ->
-                Text("Arquivo: $name", style = MaterialTheme.typography.bodyMedium)
-            }
-
-            Button(
-                onClick = {
-                    if (isPlaying) playerManager.getCurrentPlayer()?.pause()
-                    else playerManager.getCurrentPlayer()?.play()
-                },
-                enabled = currentFileName != null
-            ) {
-                Text(if (isPlaying) "Pause" else "Play")
-            }
-
-            if (currentFileName?.endsWith(".slac") == true) {
-                Card(modifier = Modifier.fillMaxWidth(), elevation = CardDefaults.cardElevation(4.dp)) {
-                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Controles Espaciais (SLAC)", style = MaterialTheme.typography.titleMedium)
-
-                        Text("Wideness: ${"%.2f".format(wideness)}")
-                        Slider(value = wideness, onValueChange = { wideness = it }, valueRange = 0f..2f)
-
-                        Text("Reverb Wet: ${"%.2f".format(reverbWet)}")
-                        Slider(value = reverbWet, onValueChange = { reverbWet = it }, valueRange = 0f..1f)
+    fun selectTrack(index: Int) {
+        scope.launch {
+            currentIndex = index
+            val track = tracks[index]
+            playerManager.loadFile(context, track.path)
+            playerManager.getCurrentPlayer()?.onPlaybackStateChanged = { playing -> isPlaying = playing }
+            position = 0L
+            // Extrai capa (formatos comuns); .slac usa placeholder por enquanto
+            art = withContext(Dispatchers.IO) {
+                if (track.isSlac) null else runCatching {
+                    val r = MediaMetadataRetriever()
+                    r.setDataSource(track.path)
+                    val bytes = r.embeddedPicture
+                    r.release()
+                    bytes?.let {
+                        val bmp = BitmapFactory.decodeByteArray(it, 0, it.size)
+                        // Versao minuscula = blur natural quando escalada
+                        bmp?.let { b -> Bitmap.createScaledBitmap(b, 48, 48, true) }
                     }
-                }
+                }.getOrNull()
             }
         }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { playerManager.release() }
+    }
+
+    val idx = currentIndex
+    if (idx == null) {
+        LibraryScreen(tracks = tracks) { t ->
+            selectTrack(tracks.indexOf(t))
+        }
+    } else {
+        val track = tracks[idx]
+        PlayerScreen(
+            track = track,
+            art = art,
+            isPlaying = isPlaying,
+            positionMs = position,
+            wideness = wideness,
+            reverbWet = reverbWet,
+            onBack = {
+                playerManager.getCurrentPlayer()?.pause()
+                currentIndex = null
+            },
+            onPlayPause = {
+                val p = playerManager.getCurrentPlayer() ?: return@PlayerScreen
+                if (isPlaying) p.pause() else p.play()
+            },
+            onNext = { if (idx + 1 < tracks.size) selectTrack(idx + 1) },
+            onPrev = { if (idx - 1 >= 0) selectTrack(idx - 1) },
+            onSeek = { ms ->
+                playerManager.getCurrentPlayer()?.seekTo(ms)
+                position = ms
+            },
+            onSpatialChange = { w, r -> wideness = w; reverbWet = r }
+        )
     }
 }

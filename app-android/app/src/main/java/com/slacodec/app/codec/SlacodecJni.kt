@@ -12,5 +12,6 @@ class SlacodecJni {
     external fun nativeSetWideness(handle: Long, wideness: Float)
     external fun nativeSetReverbWet(handle: Long, wet: Float)
     external fun nativeGetDurationMs(handle: Long): Long
+    external fun nativeProbe(path: String): String
     external fun nativeRelease(handle: Long)
 }

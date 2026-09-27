@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <string>
+#include <cstdio>
 #include <android/log.h>
 
 #include "rt/realtime_player.hpp"
@@ -87,6 +88,24 @@ Java_com_slacodec_app_codec_SlacodecJni_nativeGetDurationMs(JNIEnv*, jobject, jl
     auto* np = P(h);
     if (!np->opened || np->player.sample_rate() == 0) return 0;
     return (jlong)((np->player.total_samples() * 1000ULL) / np->player.sample_rate());
+}
+
+// Le apenas o header do container: duracao | sample_rate | canais | bits
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_slacodec_app_codec_SlacodecJni_nativeProbe(JNIEnv* env, jobject, jstring path) {
+    const char* c = env->GetStringUTFChars(path, nullptr);
+    std::string p(c);
+    env->ReleaseStringUTFChars(path, c);
+
+    slac::rt::StreamingDecoder dec;
+    if (!slac::rt::StreamingDecoder::open(p, dec)) {
+        return env->NewStringUTF("0|0|0|0");
+    }
+    char buf[96];
+    snprintf(buf, sizeof(buf), "%llu|%u|%u|%d",
+             (unsigned long long)dec.total_samples(),
+             dec.sample_rate(), dec.channels(), dec.bits_per_sample());
+    return env->NewStringUTF(buf);
 }
 
 extern "C" JNIEXPORT void JNICALL
