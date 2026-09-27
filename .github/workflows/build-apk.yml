@@ -21,12 +21,16 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle Wrapper
-        # Garante que o gradlew tenha permissão de execução no Ubuntu
-        run: chmod +x app-android/gradlew || echo "gradlew not found, will be generated"
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Generate Gradle Wrapper (v8.4)
+        # Este comando cria o script 'gradlew' e baixa o jar da versão 8.4
+        run: gradle wrapper --gradle-version 8.4
+        working-directory: app-android
 
       - name: Build Debug APK
-        # O PONTO É CRUCIAL: ./gradlew usa a versão 8.4, não a 9.7.1 do servidor
+        # Agora o ./gradlew existe e usará exatamente a versão 8.4
         run: ./gradlew assembleDebug --no-daemon
         working-directory: app-android
 
