@@ -14,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
 import com.slacodec.app.model.Track
+import com.slacodec.app.library.LibraryCache
 import com.slacodec.app.library.LibraryScanner
 import com.slacodec.app.playback.PlayerManager
 import com.slacodec.app.playback.SlacPlayer
@@ -24,6 +25,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+private fun scaleMax(b: Bitmap, max: Int): Bitmap {
+    val largest = maxOf(b.width, b.height)
+    if (largest <= max) return b
+    val scale = max.toFloat() / largest
+    return Bitmap.createScaledBitmap(
+        b,
+        (b.width * scale).toInt().coerceAtLeast(1),
+        (b.height * scale).toInt().coerceAtLeast(1),
+        true
+    )
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -39,11 +52,13 @@ fun App() {
     val playerManager = remember { PlayerManager(context) }
 
     var hasPermission by remember { mutableStateOf(false) }
-    var tracks by remember { mutableStateOf<List<Track>>(emptyList()) }
+    // CACHE: carrega instantaneamente do disco (nao some mais!)
+    var tracks by remember { mutableStateOf(LibraryCache.load(context)) }
     var currentIndex by remember { mutableStateOf<Int?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
     var position by remember { mutableStateOf(0L) }
-    var art by remember { mutableStateOf<Bitmap?>(null) }
+    var artFull by remember { mutableStateOf<Bitmap?>(null) }
+    var artBlur by remember { mutableStateOf<Bitmap?>(null) }
     var wideness by remember { mutableStateOf(1.0f) }
     var reverbWet by remember { mutableStateOf(0.2f) }
 
@@ -53,7 +68,9 @@ fun App() {
 
     fun rescan() {
         scope.launch {
-            tracks = withContext(Dispatchers.IO) { LibraryScanner.scan(context) }
+            val fresh = withContext(Dispatchers.IO) { LibraryScanner.scan(context) }
+            tracks = fresh
+            withContext(Dispatchers.IO) { LibraryCache.save(context, fresh) }
         }
     }
 
@@ -73,6 +90,7 @@ fun App() {
         )
     }
 
+    // Refresh em background (cache ja esta visivel)
     LaunchedEffect(hasPermission) {
         if (hasPermission) rescan()
     }
@@ -95,7 +113,7 @@ fun App() {
             playerManager.loadFile(context, track.path)
             playerManager.getCurrentPlayer()?.onPlaybackStateChanged = { playing -> isPlaying = playing }
             position = 0L
-            art = withContext(Dispatchers.IO) {
+            val pair = withContext(Dispatchers.IO) {
                 if (track.isSlac) null else runCatching {
                     val r = MediaMetadataRetriever()
                     r.setDataSource(context, Uri.parse(track.path))
@@ -103,10 +121,15 @@ fun App() {
                     r.release()
                     bytes?.let {
                         val bmp = BitmapFactory.decodeByteArray(it, 0, it.size)
-                        bmp?.let { b -> Bitmap.createScaledBitmap(b, 48, 48, true) }
+                        bmp?.let { b ->
+                            // DUAS resolucoes: 512px pra moldura, 48px pro blur do fundo
+                            scaleMax(b, 512) to Bitmap.createScaledBitmap(b, 48, 48, true)
+                        }
                     }
                 }.getOrNull()
             }
+            artFull = pair?.first
+            artBlur = pair?.second
         }
     }
 
@@ -125,7 +148,8 @@ fun App() {
         val track = tracks[idx]
         PlayerScreen(
             track = track,
-            art = art,
+            art = artFull,
+            artBlur = artBlur,
             isPlaying = isPlaying,
             positionMs = position,
             wideness = wideness,

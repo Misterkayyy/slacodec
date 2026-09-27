@@ -25,7 +25,8 @@ import com.slacodec.app.model.formatDuration
 @Composable
 fun PlayerScreen(
     track: Track,
-    art: Bitmap?,
+    art: Bitmap?,          // Alta resolucao (moldura)
+    artBlur: Bitmap?,      // Baixa resolucao (fundo ofuscado)
     isPlaying: Boolean,
     positionMs: Long,
     wideness: Float,
@@ -40,10 +41,10 @@ fun PlayerScreen(
     val duration = track.durationMs.coerceAtLeast(1L)
 
     Box(Modifier.fillMaxSize()) {
-        // Fundo: capa ofuscada
-        if (art != null) {
+        // Fundo: blur (ou gradiente)
+        if (artBlur != null) {
             Image(
-                bitmap = art.asImageBitmap(),
+                bitmap = artBlur.asImageBitmap(),
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
@@ -62,14 +63,12 @@ fun PlayerScreen(
                     )
             )
         }
-        // Scrim
         Box(
             Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background.copy(alpha = 0.55f))
         )
 
-        // Conteúdo
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -77,7 +76,6 @@ fun PlayerScreen(
                 .padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Top bar
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -93,10 +91,7 @@ fun PlayerScreen(
                 )
                 Spacer(Modifier.weight(1f))
                 if (track.isSlac) {
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.primary
-                    ) {
+                    Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.primary) {
                         Text(
                             "SLAC LOSSLESS",
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
@@ -110,7 +105,7 @@ fun PlayerScreen(
 
             Spacer(Modifier.weight(0.6f))
 
-            // Capa em moldura
+            // Capa em moldura (ALTA RESOLUCAO agora)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -141,7 +136,6 @@ fun PlayerScreen(
 
             Spacer(Modifier.height(24.dp))
 
-            // Título + álbum
             Text(
                 track.title,
                 style = MaterialTheme.typography.headlineSmall,
@@ -158,7 +152,6 @@ fun PlayerScreen(
 
             Spacer(Modifier.height(20.dp))
 
-            // Seek bar
             Slider(
                 value = positionMs.toFloat().coerceIn(0f, duration.toFloat()),
                 onValueChange = { onSeek(it.toLong()) },
@@ -173,7 +166,6 @@ fun PlayerScreen(
 
             Spacer(Modifier.height(8.dp))
 
-            // Controles
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(32.dp)
@@ -190,7 +182,6 @@ fun PlayerScreen(
                     modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable { onNext() }.padding(8.dp))
             }
 
-            // Painel espacial (só .slac)
             if (track.isSlac) {
                 Spacer(Modifier.height(16.dp))
                 Card(
