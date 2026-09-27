@@ -53,7 +53,6 @@ class SlacPlayer(private val context: Context) : Player {
         }
     }
 
-    // Aproximado ate implementarmos o seek nativo via seek table
     override fun positionMs(): Long =
         if (started) baseMs + (System.currentTimeMillis() - playStart) else baseMs
 
@@ -85,9 +84,16 @@ class SlacPlayer(private val context: Context) : Player {
     private fun copyUriToCache(uri: Uri): String {
         val f = File(context.cacheDir, "current.slac")
         if (f.exists()) f.delete()
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            FileOutputStream(f).use { out -> input.copyTo(out) }
-        } ?: throw IllegalStateException("Nao foi possivel abrir a URI")
+        if (uri.scheme == "content") {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(f).use { out -> input.copyTo(out) }
+            } ?: throw IllegalStateException("Nao foi possivel abrir a URI")
+        } else {
+            val src = File(uri.path ?: uri.toString())
+            src.inputStream().use { input ->
+                FileOutputStream(f).use { out -> input.copyTo(out) }
+            }
+        }
         return f.absolutePath
     }
 }

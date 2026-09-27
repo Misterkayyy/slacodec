@@ -23,7 +23,8 @@ import com.slacodec.app.model.formatSize
 @Composable
 fun LibraryScreen(
     tracks: List<Track>,
-    onTrackClick: (Track) -> Unit
+    onTrackClick: (Track) -> Unit,
+    onAddFolder: () -> Unit
 ) {
     var query by remember { mutableStateOf("") }
     val filtered = remember(tracks, query) {
@@ -35,7 +36,6 @@ fun LibraryScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Header
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -48,9 +48,11 @@ fun LibraryScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            TextButton(onClick = onAddFolder) {
+                Text("📁 Pasta .slac", fontSize = 13.sp)
+            }
         }
 
-        // Busca
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
@@ -62,7 +64,6 @@ fun LibraryScreen(
 
         Spacer(Modifier.height(8.dp))
 
-        // Lista
         LazyColumn(contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) {
             items(filtered, key = { it.path }) { track ->
                 TrackRow(track = track, onClick = { onTrackClick(track) })
@@ -81,7 +82,6 @@ fun TrackRow(track: Track, onClick: () -> Unit) {
             .padding(horizontal = 8.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Icone / badge de formato
         Box(
             modifier = Modifier
                 .size(46.dp)

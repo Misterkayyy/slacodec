@@ -4,6 +4,7 @@ import android.Manifest
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -11,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
 import com.slacodec.app.model.Track
 import com.slacodec.app.library.LibraryScanner
 import com.slacodec.app.playback.PlayerManager
@@ -32,7 +34,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun App() {
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val playerManager = remember { PlayerManager(context) }
 
@@ -49,6 +51,21 @@ fun App() {
         ActivityResultContracts.RequestPermission()
     ) { granted -> hasPermission = granted }
 
+    fun rescan() {
+        scope.launch {
+            tracks = withContext(Dispatchers.IO) { LibraryScanner.scan(context) }
+        }
+    }
+
+    val treeLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        uri?.let {
+            LibraryScanner.addTree(context, it)
+            rescan()
+        }
+    }
+
     LaunchedEffect(Unit) {
         permLauncher.launch(
             if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO
@@ -56,13 +73,10 @@ fun App() {
         )
     }
 
-    // Scan da biblioteca
     LaunchedEffect(hasPermission) {
-        if (!hasPermission) return@LaunchedEffect
-        tracks = withContext(Dispatchers.IO) { LibraryScanner.scan() }
+        if (hasPermission) rescan()
     }
 
-    // Polling de posicao
     LaunchedEffect(currentIndex, isPlaying) {
         while (isPlaying) {
             position = playerManager.getCurrentPlayer()?.positionMs() ?: 0L
@@ -70,7 +84,6 @@ fun App() {
         }
     }
 
-    // Sliders espaciais em tempo real
     LaunchedEffect(wideness, reverbWet) {
         (playerManager.getCurrentPlayer() as? SlacPlayer)?.setSpatialParams(wideness, reverbWet)
     }
@@ -82,16 +95,14 @@ fun App() {
             playerManager.loadFile(context, track.path)
             playerManager.getCurrentPlayer()?.onPlaybackStateChanged = { playing -> isPlaying = playing }
             position = 0L
-            // Extrai capa (formatos comuns); .slac usa placeholder por enquanto
             art = withContext(Dispatchers.IO) {
                 if (track.isSlac) null else runCatching {
                     val r = MediaMetadataRetriever()
-                    r.setDataSource(track.path)
+                    r.setDataSource(context, Uri.parse(track.path))
                     val bytes = r.embeddedPicture
                     r.release()
                     bytes?.let {
                         val bmp = BitmapFactory.decodeByteArray(it, 0, it.size)
-                        // Versao minuscula = blur natural quando escalada
                         bmp?.let { b -> Bitmap.createScaledBitmap(b, 48, 48, true) }
                     }
                 }.getOrNull()
@@ -105,9 +116,11 @@ fun App() {
 
     val idx = currentIndex
     if (idx == null) {
-        LibraryScreen(tracks = tracks) { t ->
-            selectTrack(tracks.indexOf(t))
-        }
+        LibraryScreen(
+            tracks = tracks,
+            onTrackClick = { t -> selectTrack(tracks.indexOf(t)) },
+            onAddFolder = { treeLauncher.launch(null) }
+        )
     } else {
         val track = tracks[idx]
         PlayerScreen(
