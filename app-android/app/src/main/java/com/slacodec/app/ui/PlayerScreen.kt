@@ -3,6 +3,7 @@ package com.slacodec.app.ui
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -39,7 +40,7 @@ fun PlayerScreen(
     val duration = track.durationMs.coerceAtLeast(1L)
 
     Box(Modifier.fillMaxSize()) {
-        // ── Fundo: capa ofuscada preenchendo a tela ──
+        // Fundo: capa ofuscada
         if (art != null) {
             Image(
                 bitmap = art.asImageBitmap(),
@@ -61,14 +62,14 @@ fun PlayerScreen(
                     )
             )
         }
-        // Scrim para legibilidade
+        // Scrim
         Box(
             Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background.copy(alpha = 0.55f))
         )
 
-        // ── Conteudo ──
+        // Conteúdo
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -87,7 +88,7 @@ fun PlayerScreen(
                     color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier
                         .clip(RoundedCornerShape(10.dp))
-                        .clickable24 { onBack() }
+                        .clickable { onBack() }
                         .padding(8.dp)
                 )
                 Spacer(Modifier.weight(1f))
@@ -109,7 +110,7 @@ fun PlayerScreen(
 
             Spacer(Modifier.weight(0.6f))
 
-            // ── Capa em moldura ──
+            // Capa em moldura
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -140,7 +141,7 @@ fun PlayerScreen(
 
             Spacer(Modifier.height(24.dp))
 
-            // Titulo + album
+            // Título + álbum
             Text(
                 track.title,
                 style = MaterialTheme.typography.headlineSmall,
@@ -178,18 +179,18 @@ fun PlayerScreen(
                 horizontalArrangement = Arrangement.spacedBy(32.dp)
             ) {
                 Text("⏮", fontSize = 30.sp, color = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable24 { onPrev() }.padding(8.dp))
+                    modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable { onPrev() }.padding(8.dp))
                 Text(
                     if (isPlaying) "⏸" else "▶",
                     fontSize = 46.sp,
                     color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable24 { onPlayPause() }.padding(10.dp)
+                    modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable { onPlayPause() }.padding(10.dp)
                 )
                 Text("⏭", fontSize = 30.sp, color = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable24 { onNext() }.padding(8.dp))
+                    modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable { onNext() }.padding(8.dp))
             }
 
-            // ── Painel espacial (so .slac) ──
+            // Painel espacial (só .slac)
             if (track.isSlac) {
                 Spacer(Modifier.height(16.dp))
                 Card(
@@ -228,10 +229,3 @@ fun PlayerScreen(
         }
     }
 }
-
-// Helper de clique sem ripple dependency
-private fun Modifier.clickable24(onClick: () -> Unit): Modifier =
-    this.then(androidx.compose.foundation.clickableModifier(onClick))
-
-private fun androidx.compose.foundation.clickableModifier(onClick: () -> Unit): Modifier =
-    androidx.compose.foundation.clickable(onClick = onClick)

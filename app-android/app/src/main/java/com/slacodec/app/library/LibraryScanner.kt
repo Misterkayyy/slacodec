@@ -12,7 +12,8 @@ object LibraryScanner {
 
     fun scan(): List<Track> {
         val root = Environment.getExternalStorageDirectory()
-        return root.walkTopDown(maxDepth = 6)
+        return root.walkTopDown()        // <-- CORREÇÃO: sem parâmetro
+            .maxDepth(6)                  // <-- CORREÇÃO: maxDepth é método separado
             .filter { it.isFile && it.extension.lowercase() in EXTENSIONS }
             .mapNotNull { runCatching { buildTrack(it) }.getOrNull() }
             .sortedBy { it.title.lowercase() }
@@ -22,7 +23,6 @@ object LibraryScanner {
     private fun buildTrack(f: File): Track {
         val ext = f.extension.lowercase()
         if (ext == "slac") {
-            // Metadata lossless direto do container SLAC via JNI
             val parts = jni.nativeProbe(f.absolutePath).split("|")
             val totalSamples = parts.getOrNull(0)?.toLongOrNull() ?: 0L
             val sr = parts.getOrNull(1)?.toLongOrNull()?.takeIf { it > 0 } ?: 44100L
