@@ -40,3 +40,6 @@ tmp/
 # Golden outputs
 golden/out/
 *.golden.wav
+local.properties
+.gradle/
+build/

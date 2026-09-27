@@ -21,11 +21,13 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+      - name: Setup Gradle Wrapper
+        # Garante que o gradlew tenha permissão de execução no Ubuntu
+        run: chmod +x app-android/gradlew || echo "gradlew not found, will be generated"
 
       - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon
+        # O PONTO É CRUCIAL: ./gradlew usa a versão 8.4, não a 9.7.1 do servidor
+        run: ./gradlew assembleDebug --no-daemon
         working-directory: app-android
 
       - name: Upload APK artifact
