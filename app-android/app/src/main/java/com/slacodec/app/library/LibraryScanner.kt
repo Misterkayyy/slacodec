@@ -36,7 +36,18 @@ object LibraryScanner {
         prefs.edit().putStringSet("trees", set).apply()
     }
 
-    // Formatos conhecidos via banco de midia oficial do Android
+    fun removeTree(context: Context, uriString: String) {
+        runCatching {
+            context.contentResolver.releasePersistableUriPermission(
+                Uri.parse(uriString), Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+        val prefs = context.getSharedPreferences("slac_prefs", Context.MODE_PRIVATE)
+        val set = savedTrees(context).toMutableSet()
+        set.remove(uriString)
+        prefs.edit().putStringSet("trees", set).apply()
+    }
+
     private fun scanMediaStore(context: Context): List<Track> {
         val out = mutableListOf<Track>()
         val projection = arrayOf(
@@ -87,7 +98,6 @@ object LibraryScanner {
         return out
     }
 
-    // Pastas .slac escolhidas pelo usuario (SAF)
     private fun scanTree(context: Context, treeUri: Uri): List<Track> {
         val root = DocumentFile.fromTreeUri(context, treeUri) ?: return emptyList()
         val out = mutableListOf<Track>()
@@ -112,7 +122,10 @@ object LibraryScanner {
                         format = "SLAC",
                         sizeBytes = size,
                         bitrateKbps = bitrate,
-                        durationMs = duration
+                        durationMs = duration,
+                        sampleRateHz = info?.sampleRate ?: 0,
+                        bitsPerSample = info?.bits ?: 0,
+                        channels = info?.channels ?: 0
                     )
                 }
             }

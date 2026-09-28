@@ -19,6 +19,9 @@ object LibraryCache {
                 put("size", t.sizeBytes)
                 put("bitrate", t.bitrateKbps)
                 put("duration", t.durationMs)
+                put("sr", t.sampleRateHz)
+                put("bits", t.bitsPerSample)
+                put("ch", t.channels)
             })
         }
         context.getSharedPreferences("slac_prefs", Context.MODE_PRIVATE)
@@ -39,7 +42,10 @@ object LibraryCache {
                     format = o.getString("format"),
                     sizeBytes = o.getLong("size"),
                     bitrateKbps = o.getInt("bitrate"),
-                    durationMs = o.getLong("duration")
+                    durationMs = o.getLong("duration"),
+                    sampleRateHz = o.optInt("sr"),
+                    bitsPerSample = o.optInt("bits"),
+                    channels = o.optInt("ch")
                 )
             }
         }.getOrDefault(emptyList())

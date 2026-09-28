@@ -7,7 +7,10 @@ data class Track(
     val format: String,
     val sizeBytes: Long,
     val bitrateKbps: Int,
-    val durationMs: Long
+    val durationMs: Long,
+    val sampleRateHz: Int = 0,
+    val bitsPerSample: Int = 0,
+    val channels: Int = 0
 ) {
     val isSlac: Boolean get() = format == "SLAC"
 }
@@ -18,7 +21,11 @@ fun formatSize(bytes: Long): String =
 
 fun formatDuration(ms: Long): String {
     val totalSec = ms / 1000
-    val min = totalSec / 60
-    val sec = totalSec % 60
-    return String.format("%d:%02d", min, sec)
+    return String.format("%d:%02d", totalSec / 60, totalSec % 60)
+}
+
+fun formatSampleRate(sr: Int): String = when {
+    sr <= 0 -> ""
+    sr % 1000 == 0 -> "${sr / 1000} kHz"
+    else -> String.format("%.1f kHz", sr / 1000.0)
 }
