@@ -1,7 +1,6 @@
 package com.slacodec.app.ui
 
 import android.graphics.Bitmap
-import android.os.Build
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -12,25 +11,31 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,27 +43,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.slacodec.app.model.Track
 import com.slacodec.app.model.formatDuration
 import kotlin.math.abs
-
-private const val G_BACK = "←"
-private const val G_PREV = "⏮\uFE0E"
-private const val G_NEXT = "⏭\uFE0E"
-private const val G_PLAY = "▶\uFE0E"
-private const val G_PAUSE = "⏸\uFE0E"
-private const val G_SHUFFLE = "⇄"
-private const val G_REPEAT = "⟳"
 
 private data class SpatialPreset(val name: String, val wideness: Float, val wet: Float)
 
@@ -84,6 +82,9 @@ fun PlayerScreen(
     isFavorite: Boolean,
     shuffle: Boolean,
     repeatMode: Int,
+    queue: List<Track>,
+    queueIndex: Int,
+    onSelectQueue: (Int) -> Unit,
     onBack: () -> Unit,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
@@ -96,15 +97,17 @@ fun PlayerScreen(
 ) {
     val duration = track.durationMs.coerceAtLeast(1L)
     var spatialExpanded by remember { mutableStateOf(false) }
+    var showQueue by remember { mutableStateOf(false) }
+    val isDark = MaterialTheme.colorScheme.background.red < 0.5f
+    val onBg = MaterialTheme.colorScheme.onBackground
 
     Box(Modifier.fillMaxSize()) {
+        // Fundo: blur REAL (sem blocos)
         if (artBlur != null) {
             Image(
                 bitmap = artBlur.asImageBitmap(),
                 contentDescription = null,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .then(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Modifier.blur(24.dp) else Modifier),
+                modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
                 filterQuality = FilterQuality.High
             )
@@ -120,29 +123,32 @@ fun PlayerScreen(
                 )
             )
         }
-        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background.copy(alpha = 0.5f)))
+        // Scrim adaptativo: escuro forte no dark mode (contraste total)
+        Box(
+            Modifier.fillMaxSize().background(
+                MaterialTheme.colorScheme.background.copy(alpha = if (isDark) 0.72f else 0.42f)
+            )
+        )
+        if (isDark) Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.25f)))
 
         Column(
             Modifier
                 .fillMaxSize()
+                .verticalScroll(rememberScrollState())
                 .statusBarsPadding()
                 .padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            Spacer(Modifier.height(8.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    G_BACK, fontSize = 26.sp,
-                    color = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { onBack() }.padding(8.dp)
-                )
+                IconTap(IconPaths.BACK, onBg, 24.dp) { onBack() }
                 Spacer(Modifier.weight(1f))
-                Text(
-                    if (isFavorite) "♥" else "♡",
-                    fontSize = 22.sp,
-                    color = if (isFavorite) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { onToggleFavorite() }.padding(8.dp)
-                )
+                IconTap(IconPaths.QUEUE, onBg, 22.dp) { showQueue = true }
+                IconTap(
+                    if (isFavorite) IconPaths.HEART else IconPaths.HEART_OUTLINE,
+                    if (isFavorite) MaterialTheme.colorScheme.primary else onBg,
+                    22.dp
+                ) { onToggleFavorite() }
                 Spacer(Modifier.width(4.dp))
                 if (track.isSlac) {
                     Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.primary) {
@@ -157,14 +163,14 @@ fun PlayerScreen(
                 }
             }
 
-            Spacer(Modifier.weight(0.5f))
+            Spacer(Modifier.height(20.dp))
 
             Box(
                 Modifier
                     .fillMaxWidth()
                     .aspectRatio(1f)
                     .clip(RoundedCornerShape(28.dp))
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f))
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))
                     .padding(14.dp)
             ) {
                 Box(
@@ -191,7 +197,7 @@ fun PlayerScreen(
             Text(
                 track.title,
                 style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.onBackground,
+                color = onBg,
                 maxLines = 1,
                 textAlign = TextAlign.Center
             )
@@ -236,49 +242,44 @@ fun PlayerScreen(
                 Text(formatDuration(duration), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(8.dp))
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(36.dp)
             ) {
-                Text(G_PREV, fontSize = 28.sp, color = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable { onPrev() }.padding(8.dp))
-                Text(
-                    if (isPlaying) G_PAUSE else G_PLAY,
-                    fontSize = 46.sp,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable { onPlayPause() }.padding(10.dp)
-                )
-                Text(G_NEXT, fontSize = 28.sp, color = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable { onNext() }.padding(8.dp))
+                IconTap(IconPaths.PREV, onBg, 30.dp, 10.dp) { onPrev() }
+                IconTap(
+                    if (isPlaying) IconPaths.PAUSE else IconPaths.PLAY,
+                    MaterialTheme.colorScheme.primary,
+                    56.dp, 12.dp
+                ) { onPlayPause() }
+                IconTap(IconPaths.NEXT, onBg, 30.dp, 10.dp) { onNext() }
             }
 
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 48.dp, vertical = 6.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 56.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    G_SHUFFLE, fontSize = 20.sp,
-                    color = if (shuffle) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { onToggleShuffle() }.padding(8.dp)
-                )
+                IconTap(
+                    IconPaths.SHUFFLE,
+                    if (shuffle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    20.dp, 6.dp
+                ) { onToggleShuffle() }
                 Spacer(Modifier.weight(1f))
-                Text(
-                    if (repeatMode == 2) "${G_REPEAT}¹" else G_REPEAT,
-                    fontSize = 20.sp,
-                    color = if (repeatMode > 0) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { onToggleRepeat() }.padding(8.dp)
-                )
+                IconTap(
+                    if (repeatMode == 2) IconPaths.REPEAT_ONE else IconPaths.REPEAT,
+                    if (repeatMode > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    20.dp, 6.dp
+                ) { onToggleRepeat() }
             }
 
             if (track.isSlac) {
+                Spacer(Modifier.height(8.dp))
                 Card(
                     modifier = Modifier.fillMaxWidth().animateContentSize(),
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f)
                     ),
                     shape = RoundedCornerShape(18.dp)
                 ) {
@@ -339,8 +340,51 @@ fun PlayerScreen(
                 }
             }
 
-            Spacer(Modifier.weight(1f))
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.navigationBarsPadding())
+        }
+    }
+
+    // Fila rapida (bottom sheet)
+    if (showQueue) {
+        ModalBottomSheet(
+            onDismissRequest = { showQueue = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ) {
+            Text(
+                "Fila de reproducao",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
+            )
+            LazyColumn(contentPadding = PaddingValues(bottom = 32.dp)) {
+                itemsIndexed(queue, key = { i, t -> "$i-${t.path}" }) { i, t ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { showQueue = false; onSelectQueue(i) }
+                            .padding(horizontal = 24.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                t.title,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = if (i == queueIndex) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                "${t.artist.ifEmpty { t.album }}  •  ${formatDuration(t.durationMs)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1
+                            )
+                        }
+                        if (i == queueIndex && isPlaying) EqBars()
+                    }
+                }
+            }
         }
     }
 }

@@ -63,6 +63,10 @@ class SlacPlayer(private val context: Context) : Player {
 
     override fun release() = releaseNative()
 
+    fun setUseAuto(on: Boolean) {
+        if (handle != 0L) jni.nativeSetUseAuto(handle, on)
+    }
+
     fun setSpatialParams(wideness: Float, reverbWet: Float) {
         if (handle != 0L) {
             jni.nativeSetWideness(handle, wideness)

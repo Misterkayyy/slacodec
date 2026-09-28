@@ -11,11 +11,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -27,6 +22,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.slacodec.app.library.LibraryCache
 import com.slacodec.app.library.LibraryScanner
@@ -35,11 +31,13 @@ import com.slacodec.app.model.Track
 import com.slacodec.app.model.formatSampleRate
 import com.slacodec.app.playback.PlayerManager
 import com.slacodec.app.playback.SlacPlayer
+import com.slacodec.app.ui.ArtLoader
 import com.slacodec.app.ui.LibraryScreen
 import com.slacodec.app.ui.MiniPlayer
 import com.slacodec.app.ui.PlayerScreen
 import com.slacodec.app.ui.SettingsScreen
 import com.slacodec.app.ui.SlacodecTheme
+import com.slacodec.app.ui.blurBitmap
 import com.slacodec.app.ui.scaleMaxBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -52,9 +50,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val ctx = LocalContext.current
             var themeMode by remember {
-                mutableStateOf(
-                    ctx.getSharedPreferences("slac_prefs", MODE_PRIVATE).getInt("theme_mode", 0)
-                )
+                mutableStateOf(ctx.getSharedPreferences("slac_prefs", MODE_PRIVATE).getInt("theme_mode", 0))
             }
             SlacodecTheme(themeMode) {
                 App(onThemeMode = { m ->
@@ -82,14 +78,19 @@ fun App(onThemeMode: (Int) -> Unit) {
     var position by remember { mutableStateOf(0L) }
     var artFull by remember { mutableStateOf<Bitmap?>(null) }
     var artBlur by remember { mutableStateOf<Bitmap?>(null) }
-    var wideness by remember { mutableStateOf(1.0f) }
-    var reverbWet by remember { mutableStateOf(0.2f) }
+    var wideness by remember { mutableStateOf(prefs.getFloat("def_wideness", 1.0f)) }
+    var reverbWet by remember { mutableStateOf(prefs.getFloat("def_wet", 0.2f)) }
     var extraInfo by remember { mutableStateOf<String?>(null) }
     var favorites by remember { mutableStateOf(prefs.getStringSet("favs", emptySet()) ?: emptySet()) }
     var shuffle by remember { mutableStateOf(false) }
     var repeatMode by remember { mutableStateOf(0) }
     var folders by remember { mutableStateOf(LibraryScanner.savedTrees(context).toList()) }
     var themeModeLocal by remember { mutableStateOf(prefs.getInt("theme_mode", 0)) }
+    var autoplay by remember { mutableStateOf(prefs.getBoolean("autoplay", true)) }
+    var rescanOnOpen by remember { mutableStateOf(prefs.getBoolean("rescan_on_open", true)) }
+    var useAuto by remember { mutableStateOf(prefs.getBoolean("use_auto", true)) }
+    var defWideness by remember { mutableStateOf(prefs.getFloat("def_wideness", 1.0f)) }
+    var defWet by remember { mutableStateOf(prefs.getFloat("def_wet", 0.2f)) }
 
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -122,10 +123,47 @@ fun App(onThemeMode: (Int) -> Unit) {
 
     LaunchedEffect(hasPermission) { if (hasPermission) rescan() }
 
+    // Scan automatico toda vez que a tela principal aparece
+    val backStack by nav.currentBackStackEntryAsState()
+    var firstRoute by remember { mutableStateOf(true) }
+    LaunchedEffect(backStack?.destination?.route) {
+        val route = backStack?.destination?.route
+        if (route == "library" && !firstRoute && rescanOnOpen && hasPermission) rescan()
+        firstRoute = false
+    }
+
+    fun handleEnded() {
+        when (repeatMode) {
+            2 -> {
+                playerManager.getCurrentPlayer()?.seekTo(0)
+                playerManager.getCurrentPlayer()?.play()
+            }
+            else -> {
+                val idx = currentIndex ?: return
+                val hasNext = shuffle || idx + 1 < tracks.size || repeatMode == 1
+                if (hasNext) nextTrack()
+                else {
+                    playerManager.getCurrentPlayer()?.pause()
+                    position = 0L
+                }
+            }
+        }
+    }
+
+    // Polling de posicao + deteccao de fim de faixa
     LaunchedEffect(currentIndex, isPlaying) {
-        while (isPlaying) {
-            position = playerManager.getCurrentPlayer()?.positionMs() ?: 0L
-            delay(500)
+        var ended = false
+        while (isPlaying && !ended) {
+            val p = playerManager.getCurrentPlayer()
+            val pos = p?.positionMs() ?: 0L
+            position = pos
+            val dur = p?.durationMs() ?: 0L
+            if (dur > 1000 && pos >= dur - 250) {
+                ended = true
+                handleEnded()
+            } else {
+                delay(400)
+            }
         }
     }
 
@@ -144,8 +182,11 @@ fun App(onThemeMode: (Int) -> Unit) {
         scope.launch {
             currentIndex = index
             val track = tracks.getOrNull(index) ?: return@launch
+            wideness = prefs.getFloat("def_wideness", 1.0f)
+            reverbWet = prefs.getFloat("def_wet", 0.2f)
             playerManager.loadFile(context, track.path)
             playerManager.getCurrentPlayer()?.onPlaybackStateChanged = { playing -> isPlaying = playing }
+            (playerManager.getCurrentPlayer() as? SlacPlayer)?.setUseAuto(useAuto)
             position = 0L
             val pair = withContext(Dispatchers.IO) {
                 if (track.isSlac) {
@@ -163,7 +204,8 @@ fun App(onThemeMode: (Int) -> Unit) {
                     }
                     info?.coverBytes?.let { cb ->
                         BitmapFactory.decodeByteArray(cb, 0, cb.size)?.let { b ->
-                            scaleMaxBitmap(b, 512) to Bitmap.createScaledBitmap(b, 96, 96, true)
+                            scaleMaxBitmap(b, 512) to
+                                blurBitmap(Bitmap.createScaledBitmap(b, 96, 96, true), 6, 2)
                         }
                     }
                 } else {
@@ -176,7 +218,8 @@ fun App(onThemeMode: (Int) -> Unit) {
                         bytes?.let {
                             val bmp = BitmapFactory.decodeByteArray(it, 0, it.size)
                             bmp?.let { b ->
-                                scaleMaxBitmap(b, 512) to Bitmap.createScaledBitmap(b, 96, 96, true)
+                                scaleMaxBitmap(b, 512) to
+                                    blurBitmap(Bitmap.createScaledBitmap(b, 96, 96, true), 6, 2)
                             }
                         }
                     }.getOrNull()
@@ -184,7 +227,7 @@ fun App(onThemeMode: (Int) -> Unit) {
             }
             artFull = pair?.first
             artBlur = pair?.second
-            playerManager.getCurrentPlayer()?.play()
+            if (autoplay) playerManager.getCurrentPlayer()?.play()
             if (nav.currentBackStackEntry?.destination?.route != "player") {
                 nav.navigate("player")
             }
@@ -240,13 +283,7 @@ fun App(onThemeMode: (Int) -> Unit) {
                 }
             )
         }
-        composable(
-            "player",
-            enterTransition = { fadeIn(tween(220)) + slideInVertically(tween(280)) { it / 8 } },
-            exitTransition = { fadeOut(tween(160)) },
-            popEnterTransition = { fadeIn(tween(160)) },
-            popExitTransition = { fadeOut(tween(220)) + slideOutVertically(tween(260)) { it / 8 } }
-        ) {
+        composable("player") {
             val idx = currentIndex
             val track = idx?.let { tracks.getOrNull(it) }
             if (track == null) {
@@ -264,6 +301,9 @@ fun App(onThemeMode: (Int) -> Unit) {
                     isFavorite = favorites.contains(track.path),
                     shuffle = shuffle,
                     repeatMode = repeatMode,
+                    queue = tracks,
+                    queueIndex = idx,
+                    onSelectQueue = { i -> selectTrack(i) },
                     onBack = { nav.popBackStack() },
                     onPlayPause = { togglePlayPause() },
                     onNext = { nextTrack() },
@@ -294,7 +334,27 @@ fun App(onThemeMode: (Int) -> Unit) {
                 },
                 onAddFolder = { treeLauncher.launch(null) },
                 onRescan = { rescan() },
-                onBack = { nav.popBackStack() }
+                onBack = { nav.popBackStack() },
+                autoplay = autoplay,
+                onAutoplay = { v -> autoplay = v; prefs.edit().putBoolean("autoplay", v).apply() },
+                rescanOnOpen = rescanOnOpen,
+                onRescanOnOpen = { v -> rescanOnOpen = v; prefs.edit().putBoolean("rescan_on_open", v).apply() },
+                useAuto = useAuto,
+                onUseAuto = { v ->
+                    useAuto = v
+                    prefs.edit().putBoolean("use_auto", v).apply()
+                    (playerManager.getCurrentPlayer() as? SlacPlayer)?.setUseAuto(v)
+                },
+                defWideness = defWideness,
+                defWet = defWet,
+                onDefSpatial = { w, r ->
+                    defWideness = w; defWet = r
+                    prefs.edit().putFloat("def_wideness", w).putFloat("def_wet", r).apply()
+                },
+                onClearCache = {
+                    ArtLoader.clear()
+                    rescan()
+                }
             )
         }
     }

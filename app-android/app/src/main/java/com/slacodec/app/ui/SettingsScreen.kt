@@ -18,6 +18,8 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -36,7 +38,17 @@ fun SettingsScreen(
     onRemoveFolder: (String) -> Unit,
     onAddFolder: () -> Unit,
     onRescan: () -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    autoplay: Boolean,
+    onAutoplay: (Boolean) -> Unit,
+    rescanOnOpen: Boolean,
+    onRescanOnOpen: (Boolean) -> Unit,
+    useAuto: Boolean,
+    onUseAuto: (Boolean) -> Unit,
+    defWideness: Float,
+    defWet: Float,
+    onDefSpatial: (Float, Float) -> Unit,
+    onClearCache: () -> Unit
 ) {
     Column(
         Modifier
@@ -46,11 +58,7 @@ fun SettingsScreen(
             .padding(horizontal = 20.dp, vertical = 12.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "←", fontSize = 26.sp,
-                color = MaterialTheme.colorScheme.onBackground,
-                modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { onBack() }.padding(8.dp)
-            )
+            IconTap(IconPaths.BACK, MaterialTheme.colorScheme.onBackground, 24.dp) { onBack() }
             Text("Ajustes", style = MaterialTheme.typography.headlineMedium)
         }
 
@@ -76,11 +84,83 @@ fun SettingsScreen(
 
         Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
             Column(Modifier.padding(16.dp)) {
-                Text("Pastas .slac", style = MaterialTheme.typography.titleSmall)
+                Text("Reproducao", style = MaterialTheme.typography.titleSmall)
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Tocar ao abrir", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Inicia a musica automaticamente ao selecionar",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(checked = autoplay, onCheckedChange = onAutoplay)
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Atualizar ao abrir", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Re-escaneia a biblioteca toda vez que voltar a tela inicial",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(checked = rescanOnOpen, onCheckedChange = onRescanOnOpen)
+                }
+            }
+        }
+
+        Spacer(Modifier.padding(6.dp))
+
+        Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Spatial (SLAC)", style = MaterialTheme.typography.titleSmall)
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Automacao do arquivo", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Usa os keyframes de automacao gravados no .slac",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(checked = useAuto, onCheckedChange = onUseAuto)
+                }
+                Text("Wideness padrao: ${"%.2f".format(defWideness)}", fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Slider(
+                    value = defWideness,
+                    onValueChange = { onDefSpatial(it, defWet) },
+                    valueRange = 0f..2f
+                )
+                Text("Reverb Wet padrao: ${"%.2f".format(defWet)}", fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Slider(
+                    value = defWet,
+                    onValueChange = { onDefSpatial(defWideness, it) },
+                    valueRange = 0f..1f
+                )
+            }
+        }
+
+        Spacer(Modifier.padding(6.dp))
+
+        Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Biblioteca", style = MaterialTheme.typography.titleSmall)
                 Spacer(Modifier.padding(4.dp))
                 if (folders.isEmpty()) {
                     Text(
-                        "Nenhuma pasta adicionada.",
+                        "Nenhuma pasta .slac adicionada.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -95,14 +175,11 @@ fun SettingsScreen(
                                 style = MaterialTheme.typography.bodyMedium,
                                 modifier = Modifier.weight(1f)
                             )
-                            Text(
-                                "✕",
-                                color = MaterialTheme.colorScheme.error,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable { onRemoveFolder(f) }
-                                    .padding(8.dp)
-                            )
+                            IconTap(
+                                IconPaths.CLOSE,
+                                MaterialTheme.colorScheme.error,
+                                18.dp, 8.dp
+                            ) { onRemoveFolder(f) }
                         }
                     }
                 }
@@ -110,6 +187,7 @@ fun SettingsScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = onAddFolder) { Text("Adicionar", fontSize = 12.sp) }
                     Button(onClick = onRescan) { Text("Re-escanear", fontSize = 12.sp) }
+                    Button(onClick = onClearCache) { Text("Limpar cache", fontSize = 12.sp) }
                 }
             }
         }
@@ -131,7 +209,8 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
                 Text(
-                    "Versao 1.0  •  Codec lossless LPC+Rice\n" +
+                    "Versao 1.1  •  Codec lossless LPC+Rice\n" +
+                    "Container: fmt + meta + covr + spat + auto + seek\n" +
                     "Spatial engine: HRIR true-stereo + FDN reverb\n" +
                     "Playback: AAudio low-latency (21x realtime)\n" +
                     "Compilado com amor, direto do Termux.",

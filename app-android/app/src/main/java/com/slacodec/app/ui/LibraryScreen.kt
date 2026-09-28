@@ -93,15 +93,11 @@ fun LibraryScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Text(
-                "⚙\uFE0E",
-                fontSize = 22.sp,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable { onSettings() }
-                    .padding(10.dp)
-            )
+            IconTap(
+                IconPaths.GEAR,
+                MaterialTheme.colorScheme.onSurface,
+                22.dp, 10.dp
+            ) { onSettings() }
         }
 
         OutlinedTextField(
@@ -111,13 +107,17 @@ fun LibraryScreen(
             placeholder = { Text("Buscar musicas...") },
             singleLine = true,
             shape = RoundedCornerShape(14.dp),
+            leadingIcon = {
+                PathIcon(
+                    IconPaths.SEARCH,
+                    MaterialTheme.colorScheme.onSurfaceVariant,
+                    20.dp,
+                    Modifier.padding(start = 12.dp)
+                )
+            },
             trailingIcon = {
                 if (query.isNotEmpty()) {
-                    Text(
-                        "✕",
-                        modifier = Modifier.padding(end = 14.dp).clickable { query = "" },
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    IconTap(IconPaths.CLOSE, MaterialTheme.colorScheme.onSurfaceVariant, 18.dp, 10.dp) { query = "" }
                 }
             }
         )

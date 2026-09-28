@@ -85,24 +85,16 @@ fun MiniPlayer(
             }
             if (isPlaying) EqBars(MaterialTheme.colorScheme.onSecondaryContainer)
             Spacer(Modifier.width(6.dp))
-            Text(
-                if (isPlaying) "⏸\uFE0E" else "▶\uFE0E",
-                fontSize = 22.sp,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .clickable { onPlayPause() }
-                    .padding(8.dp)
-            )
-            Text(
-                "⏭\uFE0E",
-                fontSize = 18.sp,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .clickable { onNext() }
-                    .padding(8.dp)
-            )
+            IconTap(
+                if (isPlaying) IconPaths.PAUSE else IconPaths.PLAY,
+                MaterialTheme.colorScheme.onSecondaryContainer,
+                22.dp, 8.dp
+            ) { onPlayPause() }
+            IconTap(
+                IconPaths.NEXT,
+                MaterialTheme.colorScheme.onSecondaryContainer,
+                18.dp, 8.dp
+            ) { onNext() }
         }
     }
 }

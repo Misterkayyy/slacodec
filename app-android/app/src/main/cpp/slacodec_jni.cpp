@@ -83,6 +83,13 @@ Java_com_slacodec_app_codec_SlacodecJni_nativeSetReverbWet(JNIEnv*, jobject, jlo
     if (np->opened) np->player.reconfigure(np->cfg);
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_slacodec_app_codec_SlacodecJni_nativeSetUseAuto(JNIEnv*, jobject, jlong h, jboolean on) {
+    auto* np = P(h);
+    np->cfg.use_auto = (on == JNI_TRUE);
+    if (np->opened) np->player.reconfigure(np->cfg);
+}
+
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_slacodec_app_codec_SlacodecJni_nativeGetDurationMs(JNIEnv*, jobject, jlong h) {
     auto* np = P(h);
