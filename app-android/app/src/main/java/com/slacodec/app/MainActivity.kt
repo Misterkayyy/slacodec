@@ -27,7 +27,6 @@ import androidx.navigation.compose.rememberNavController
 import com.slacodec.app.library.LibraryCache
 import com.slacodec.app.library.LibraryScanner
 import com.slacodec.app.library.SlacHeaderParser
-import com.slacodec.app.model.Track
 import com.slacodec.app.model.formatSampleRate
 import com.slacodec.app.playback.PlayerManager
 import com.slacodec.app.playback.SlacPlayer
@@ -92,9 +91,7 @@ fun App(onThemeMode: (Int) -> Unit) {
     var defWideness by remember { mutableStateOf(prefs.getFloat("def_wideness", 1.0f)) }
     var defWet by remember { mutableStateOf(prefs.getFloat("def_wet", 0.2f)) }
 
-    val permLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted -> hasPermission = granted }
+    // ── Funcoes locais: ORDEM IMPORTA no Kotlin (sem referencia antecipada) ──
 
     fun rescan() {
         scope.launch {
@@ -102,84 +99,6 @@ fun App(onThemeMode: (Int) -> Unit) {
             tracks = fresh
             withContext(Dispatchers.IO) { LibraryCache.save(context, fresh) }
         }
-    }
-
-    val treeLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocumentTree()
-    ) { uri: Uri? ->
-        uri?.let {
-            LibraryScanner.addTree(context, it)
-            folders = LibraryScanner.savedTrees(context).toList()
-            rescan()
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        permLauncher.launch(
-            if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO
-            else Manifest.permission.READ_EXTERNAL_STORAGE
-        )
-    }
-
-    LaunchedEffect(hasPermission) { if (hasPermission) rescan() }
-
-    // Scan automatico toda vez que a tela principal aparece
-    val backStack by nav.currentBackStackEntryAsState()
-    var firstRoute by remember { mutableStateOf(true) }
-    LaunchedEffect(backStack?.destination?.route) {
-        val route = backStack?.destination?.route
-        if (route == "library" && !firstRoute && rescanOnOpen && hasPermission) rescan()
-        firstRoute = false
-    }
-
-    fun nextTrack() {
-        val idx = currentIndex ?: return
-        val n = tracks.size
-        if (n == 0) return
-        val target = when {
-            shuffle -> (0 until n).random()
-            idx + 1 < n -> idx + 1
-            repeatMode == 1 -> 0
-            else -> return
-        }
-
-    fun handleEnded() {
-        when (repeatMode) {
-            2 -> {
-                playerManager.getCurrentPlayer()?.seekTo(0)
-                playerManager.getCurrentPlayer()?.play()
-            }
-            else -> {
-                val idx = currentIndex ?: return
-                val hasNext = shuffle || idx + 1 < tracks.size || repeatMode == 1
-                if (hasNext) nextTrack()
-                else {
-                    playerManager.getCurrentPlayer()?.pause()
-                    position = 0L
-                }
-            }
-        }
-    }
-
-    // Polling de posicao + deteccao de fim de faixa
-    LaunchedEffect(currentIndex, isPlaying) {
-        var ended = false
-        while (isPlaying && !ended) {
-            val p = playerManager.getCurrentPlayer()
-            val pos = p?.positionMs() ?: 0L
-            position = pos
-            val dur = p?.durationMs() ?: 0L
-            if (dur > 1000 && pos >= dur - 250) {
-                ended = true
-                handleEnded()
-            } else {
-                delay(400)
-            }
-        }
-    }
-
-    LaunchedEffect(wideness, reverbWet) {
-        (playerManager.getCurrentPlayer() as? SlacPlayer)?.setSpatialParams(wideness, reverbWet)
     }
 
     fun toggleFavorite(path: String) {
@@ -210,7 +129,11 @@ fun App(onThemeMode: (Int) -> Unit) {
                         listOfNotNull(
                             formatSampleRate(it.sampleRate).ifEmpty { null },
                             if (it.bits > 0) "${it.bits}-bit" else null,
-                            when (it.channels) { 1 -> "Mono"; 2 -> "Stereo"; else -> if (it.channels > 0) "${it.channels}ch" else null }
+                            when (it.channels) {
+                                1 -> "Mono"
+                                2 -> "Stereo"
+                                else -> if (it.channels > 0) "${it.channels}ch" else null
+                            }
                         ).joinToString("  •  ")
                     }
                     info?.coverBytes?.let { cb ->
@@ -245,6 +168,16 @@ fun App(onThemeMode: (Int) -> Unit) {
         }
     }
 
+    fun nextTrack() {
+        val idx = currentIndex ?: return
+        val n = tracks.size
+        if (n == 0) return
+        val target = when {
+            shuffle -> (0 until n).random()
+            idx + 1 < n -> idx + 1
+            repeatMode == 1 -> 0
+            else -> return
+        }
         selectTrack(target)
     }
 
@@ -253,13 +186,85 @@ fun App(onThemeMode: (Int) -> Unit) {
         if (idx - 1 >= 0) selectTrack(idx - 1)
     }
 
+    fun handleEnded() {
+        when (repeatMode) {
+            2 -> {
+                playerManager.getCurrentPlayer()?.seekTo(0)
+                playerManager.getCurrentPlayer()?.play()
+            }
+            else -> {
+                val idx = currentIndex ?: return
+                val hasNext = shuffle || idx + 1 < tracks.size || repeatMode == 1
+                if (hasNext) nextTrack()
+                else {
+                    playerManager.getCurrentPlayer()?.pause()
+                    position = 0L
+                }
+            }
+        }
+    }
+
     fun togglePlayPause() {
         val p = playerManager.getCurrentPlayer() ?: return
         if (isPlaying) p.pause() else p.play()
     }
 
+    // ── Launchers ──
+    val permLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> hasPermission = granted }
+
+    val treeLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        uri?.let {
+            LibraryScanner.addTree(context, it)
+            folders = LibraryScanner.savedTrees(context).toList()
+            rescan()
+        }
+    }
+
+    // ── Effects (depois das funcoes que eles chamam) ──
+    LaunchedEffect(Unit) {
+        permLauncher.launch(
+            if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO
+            else Manifest.permission.READ_EXTERNAL_STORAGE
+        )
+    }
+
+    LaunchedEffect(hasPermission) { if (hasPermission) rescan() }
+
+    val backStack by nav.currentBackStackEntryAsState()
+    var firstRoute by remember { mutableStateOf(true) }
+    LaunchedEffect(backStack?.destination?.route) {
+        val route = backStack?.destination?.route
+        if (route == "library" && !firstRoute && rescanOnOpen && hasPermission) rescan()
+        firstRoute = false
+    }
+
+    LaunchedEffect(currentIndex, isPlaying) {
+        var ended = false
+        while (isPlaying && !ended) {
+            val p = playerManager.getCurrentPlayer()
+            val pos = p?.positionMs() ?: 0L
+            position = pos
+            val dur = p?.durationMs() ?: 0L
+            if (dur > 1000 && pos >= dur - 250) {
+                ended = true
+                handleEnded()
+            } else {
+                delay(400)
+            }
+        }
+    }
+
+    LaunchedEffect(wideness, reverbWet) {
+        (playerManager.getCurrentPlayer() as? SlacPlayer)?.setSpatialParams(wideness, reverbWet)
+    }
+
     DisposableEffect(Unit) { onDispose { playerManager.release() } }
 
+    // ── Navegacao ──
     NavHost(navController = nav, startDestination = "library") {
         composable("library") {
             LibraryScreen(
@@ -323,10 +328,7 @@ fun App(onThemeMode: (Int) -> Unit) {
         composable("settings") {
             SettingsScreen(
                 themeMode = themeModeLocal,
-                onThemeMode = { m ->
-                    themeModeLocal = m
-                    onThemeMode(m)
-                },
+                onThemeMode = { m -> themeModeLocal = m; onThemeMode(m) },
                 folders = folders,
                 onRemoveFolder = { f ->
                     LibraryScanner.removeTree(context, f)
