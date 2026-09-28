@@ -1,6 +1,6 @@
 #pragma once
 
-// ── System includes (must stay BEFORE namespace slac to avoid pollution) ──
+// System includes: SEMPRE antes de qualquer namespace (evita slac::std::*)
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
@@ -15,7 +15,9 @@
 #include <utility>
 #include <vector>
 
+// System includes: SEMPRE antes de qualquer namespace (evita slac::std::*)
 
+// ── System includes (must stay BEFORE namespace slac to avoid pollution) ──
 
 #include "auto_chunk.hpp"
 #include "block.hpp"

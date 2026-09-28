@@ -408,10 +408,6 @@ static int cmd_decode(int argc, char** argv) {
     slac::SeekTable seek;
     slac::HashInfo hash;
     std::vector<slac::core::AutoKeyframe> auto_kfs;
-    slac::SlacMetadata meta;
-    slac::SlacCover covr;
-    slac::SlacMetadata meta;
-    slac::SlacCover covr;
     std::vector<std::vector<int32_t>> pcm;
 
     try {
@@ -955,6 +951,8 @@ static int cmd_info(int argc, char** argv) {
     slac::SeekTable seek;
     slac::HashInfo hash;
     std::vector<slac::core::AutoKeyframe> auto_kfs;
+    slac::SlacMetadata meta;
+    slac::SlacCover covr;
 
     try {
         slac::decodeSlacFile(slac_data, &fmt, &spat, &seek, &hash, true, &auto_kfs, &meta, &covr);
