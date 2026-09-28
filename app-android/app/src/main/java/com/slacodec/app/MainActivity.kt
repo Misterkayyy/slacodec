@@ -161,7 +161,11 @@ fun App(onThemeMode: (Int) -> Unit) {
                             when (it.channels) { 1 -> "Mono"; 2 -> "Stereo"; else -> if (it.channels > 0) "${it.channels}ch" else null }
                         ).joinToString("  •  ")
                     }
-                    null
+                    info?.coverBytes?.let { cb ->
+                        BitmapFactory.decodeByteArray(cb, 0, cb.size)?.let { b ->
+                            scaleMaxBitmap(b, 512) to Bitmap.createScaledBitmap(b, 96, 96, true)
+                        }
+                    }
                 } else {
                     extraInfo = null
                     runCatching {

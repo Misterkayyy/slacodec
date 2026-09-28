@@ -72,6 +72,8 @@ inline constexpr uint32_t fourCC(char a, char b, char c, char d) {
 inline constexpr uint32_t kChunkSLAC = fourCC('S', 'L', 'A', 'C');
 inline constexpr uint32_t kChunkFmt  = fourCC('f', 'm', 't', ' ');
 inline constexpr uint32_t kChunkData = fourCC('d', 'a', 't', 'a');
+inline constexpr uint32_t kChunkMeta = fourCC('m', 'e', 't', 'a');
+inline constexpr uint32_t kChunkCovr = fourCC('c', 'o', 'v', 'r');
 inline constexpr uint32_t kChunkSpat = fourCC('s', 'p', 'a', 't');
 inline constexpr uint32_t kChunkAuto = fourCC('a', 'u', 't', 'o');
 inline constexpr uint32_t kChunkSeek = fourCC('s', 'e', 'e', 'k');
@@ -352,6 +354,181 @@ inline std::vector<uint8_t> encodeSlacFile(
 // ──────────────────────────────────────────────────────────────
 // DECODE
 // ──────────────────────────────────────────────────────────────
+
+
+// ──────────────────────────────────────────────────────────────
+// METADATA: chunk 'meta' estilo Vorbis Comments (CHAVE=valor)
+// Forward-compatible: decodificadores antigos ignoram este chunk.
+// ──────────────────────────────────────────────────────────────
+#include <fstream>
+#include <cstdio>
+#include <utility>
+
+struct SlacMetadata {
+    std::vector<std::pair<std::string, std::string>> fields;
+    void set(const std::string& k, const std::string& v) {
+        for (auto& f : fields) if (f.first == k) { f.second = v; return; }
+        fields.emplace_back(k, v);
+    }
+    const std::string* get(const std::string& k) const {
+        for (auto& f : fields) if (f.first == k) return &f.second;
+        return nullptr;
+    }
+};
+
+namespace detail {
+inline std::vector<uint8_t> serializeMeta(const SlacMetadata& m) {
+    std::vector<uint8_t> out;
+    for (auto& kv : m.fields) {
+        appendU32LE(out, static_cast<uint32_t>(kv.first.size()));
+        out.insert(out.end(), kv.first.begin(), kv.first.end());
+        appendU32LE(out, static_cast<uint32_t>(kv.second.size()));
+        out.insert(out.end(), kv.second.begin(), kv.second.end());
+    }
+    return out;
+}
+inline bool deserializeMeta(const uint8_t* p, size_t n, SlacMetadata& m) {
+    size_t pos = 0;
+    while (pos + 4 <= n) {
+        uint32_t kl = readU32LE(p, n, pos);
+        if (kl > n - pos) return false;
+        std::string k(reinterpret_cast<const char*>(p + pos), kl); pos += kl;
+        if (pos + 4 > n) return false;
+        uint32_t vl = readU32LE(p, n, pos);
+        if (vl > n - pos) return false;
+        std::string v(reinterpret_cast<const char*>(p + pos), vl); pos += vl;
+        m.fields.emplace_back(std::move(k), std::move(v));
+    }
+    return true;
+}
+} // namespace detail
+
+inline bool readMetaFromFile(const std::string& path, SlacMetadata& out) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    std::vector<uint8_t> buf((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    size_t pos = 0;
+    while (pos + 12 <= buf.size()) {
+        uint32_t id = detail::readU32LE(buf.data(), buf.size(), pos);
+        uint32_t sz = detail::readU32LE(buf.data(), buf.size(), pos);
+        pos += 4; // crc
+        if (pos + sz > buf.size()) return false;
+        if (id == detail::kChunkMeta)
+            return detail::deserializeMeta(buf.data() + pos, sz, out);
+        pos += sz;
+    }
+    return true; // sem chunk meta = metadata vazia
+}
+
+// Remux: reescreve o container injetando/substituindo o chunk meta
+// SEM re-encodar o audio (copia os payloads intactos).
+inline bool addMetaToFile(const std::string& path, const SlacMetadata& meta) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::vector<uint8_t> buf((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+
+    std::vector<uint8_t> out;
+    std::vector<uint8_t> metaPayload = detail::serializeMeta(meta);
+    bool metaWritten = false;
+    size_t pos = 0;
+    while (pos + 12 <= buf.size()) {
+        uint32_t id = detail::readU32LE(buf.data(), buf.size(), pos);
+        uint32_t sz = detail::readU32LE(buf.data(), buf.size(), pos);
+        pos += 4; // crc
+        if (pos + sz > buf.size()) return false;
+        std::vector<uint8_t> payload(buf.begin() + pos, buf.begin() + pos + sz);
+        pos += sz;
+        if (id == detail::kChunkMeta) continue; // descarta meta antigo
+        detail::appendChunk(out, id, payload);
+        if (!metaWritten && id == detail::kChunkFmt) {
+            detail::appendChunk(out, detail::kChunkMeta, metaPayload);
+            metaWritten = true;
+        }
+    }
+    if (!metaWritten)
+        detail::appendChunk(out, detail::kChunkMeta, metaPayload);
+
+    std::ofstream o(path + ".tmp", std::ios::binary | std::ios::trunc);
+    if (!o) return false;
+    o.write(reinterpret_cast<const char*>(out.data()), static_cast<std::streamsize>(out.size()));
+    o.close();
+    std::remove(path.c_str());
+    return std::rename((path + ".tmp").c_str(), path.c_str()) == 0;
+}
+
+
+// ──────────────────────────────────────────────────────────────
+// COVER ART: chunk 'covr' (mime + bytes da imagem embutida)
+// ──────────────────────────────────────────────────────────────
+struct SlacCover {
+    std::string mime;
+    std::vector<uint8_t> data;
+};
+
+inline bool readCoverFromFile(const std::string& path, SlacCover& out) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    std::vector<uint8_t> buf((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    size_t pos = 0;
+    while (pos + 12 <= buf.size()) {
+        uint32_t id = detail::readU32LE(buf.data(), buf.size(), pos);
+        uint32_t sz = detail::readU32LE(buf.data(), buf.size(), pos);
+        pos += 4; // crc
+        if (pos + sz > buf.size()) return false;
+        if (id == detail::kChunkCovr) {
+            size_t q = pos;
+            uint32_t ml = detail::readU32LE(buf.data(), buf.size(), q);
+            if (q + ml > pos + sz) return false;
+            out.mime.assign(reinterpret_cast<const char*>(buf.data() + q), ml);
+            q += ml;
+            out.data.assign(buf.begin() + q, buf.begin() + pos + sz);
+            return true;
+        }
+        pos += sz;
+    }
+    return true; // sem capa = ok
+}
+
+inline bool addCoverToFile(const std::string& path, const std::string& mime,
+                           const std::vector<uint8_t>& img) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::vector<uint8_t> buf((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+
+    std::vector<uint8_t> payload;
+    detail::appendU32LE(payload, static_cast<uint32_t>(mime.size()));
+    payload.insert(payload.end(), mime.begin(), mime.end());
+    payload.insert(payload.end(), img.begin(), img.end());
+
+    std::vector<uint8_t> out;
+    bool covrWritten = false;
+    size_t pos = 0;
+    while (pos + 12 <= buf.size()) {
+        uint32_t id = detail::readU32LE(buf.data(), buf.size(), pos);
+        uint32_t sz = detail::readU32LE(buf.data(), buf.size(), pos);
+        pos += 4; // crc
+        if (pos + sz > buf.size()) return false;
+        std::vector<uint8_t> chunkPayload(buf.begin() + pos, buf.begin() + pos + sz);
+        pos += sz;
+        if (id == detail::kChunkCovr) continue; // descarta capa antiga
+        detail::appendChunk(out, id, chunkPayload);
+        if (!covrWritten && id == detail::kChunkFmt) {
+            detail::appendChunk(out, detail::kChunkCovr, payload);
+            covrWritten = true;
+        }
+    }
+    if (!covrWritten)
+        detail::appendChunk(out, detail::kChunkCovr, payload);
+
+    std::ofstream o(path + ".tmp", std::ios::binary | std::ios::trunc);
+    if (!o) return false;
+    o.write(reinterpret_cast<const char*>(out.data()), static_cast<std::streamsize>(out.size()));
+    o.close();
+    std::remove(path.c_str());
+    return std::rename((path + ".tmp").c_str(), path.c_str()) == 0;
+}
 
 inline std::vector<std::vector<int32_t>> decodeSlacFile(
     const std::vector<uint8_t>& file,

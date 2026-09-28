@@ -3,6 +3,7 @@ package com.slacodec.app.ui
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -183,7 +184,7 @@ fun TrackRow(track: Track, playing: Boolean, onClick: () -> Unit) {
                         else MaterialTheme.colorScheme.onSurface
             )
             Text(
-                "${track.album}  •  ${formatSize(track.sizeBytes)}  •  ${track.bitrateKbps} kbps",
+                track.subtitle(),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,

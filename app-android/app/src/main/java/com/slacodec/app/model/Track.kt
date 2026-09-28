@@ -10,9 +10,17 @@ data class Track(
     val durationMs: Long,
     val sampleRateHz: Int = 0,
     val bitsPerSample: Int = 0,
-    val channels: Int = 0
+    val channels: Int = 0,
+    val artist: String = "",
+    val year: String = ""
 ) {
     val isSlac: Boolean get() = format == "SLAC"
+
+    fun subtitle(): String = listOfNotNull(
+        artist.ifEmpty { null },
+        album.ifEmpty { null },
+        "${formatSize(sizeBytes)} • ${bitrateKbps} kbps"
+    ).joinToString("  •  ")
 }
 
 fun formatSize(bytes: Long): String =

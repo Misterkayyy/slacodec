@@ -163,3 +163,15 @@ if(SLAC_ENABLE_SANITIZERS AND NOT MSVC)
         )
     endforeach()
 endif()
+
+# ── Ferramenta de tags (remux de metadata, sem re-encode) ──
+add_executable(slacodec-tag
+    src/slac/cli/tag.cpp
+)
+target_include_directories(slacodec-tag PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+set_target_properties(slacodec-tag PROPERTIES CXX_STANDARD 17)
+if(NOT MSVC)
+    target_compile_options(slacodec-tag PRIVATE -Wall -Wextra -Wpedantic -O3)
+endif()

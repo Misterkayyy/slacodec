@@ -7,6 +7,7 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.LruCache
 import com.slacodec.app.model.Track
+import com.slacodec.app.library.SlacHeaderParser
 
 fun scaleMaxBitmap(b: Bitmap, max: Int): Bitmap {
     val largest = maxOf(b.width, b.height)
@@ -25,7 +26,17 @@ object ArtLoader {
     fun get(key: String): Bitmap? = cache.get(key)
     fun load(context: Context, track: Track): Bitmap? {
         cache.get(track.path)?.let { return it }
-        if (track.isSlac) return null
+        if (track.isSlac) {
+            val bmp = runCatching {
+                context.contentResolver.openInputStream(android.net.Uri.parse(track.path))?.use {
+                    SlacHeaderParser.parse(it)
+                }?.coverBytes
+            }.getOrNull()
+                ?.let { cb -> BitmapFactory.decodeByteArray(cb, 0, cb.size) }
+                ?.let { scaleMaxBitmap(it, 120) }
+            bmp?.let { cache.put(track.path, it) }
+            return bmp
+        }
         val bmp = runCatching {
             val r = MediaMetadataRetriever()
             r.setDataSource(context, Uri.parse(track.path))

@@ -12,16 +12,11 @@ object LibraryCache {
         val arr = JSONArray()
         for (t in tracks) {
             arr.put(JSONObject().apply {
-                put("path", t.path)
-                put("title", t.title)
-                put("album", t.album)
-                put("format", t.format)
-                put("size", t.sizeBytes)
-                put("bitrate", t.bitrateKbps)
-                put("duration", t.durationMs)
-                put("sr", t.sampleRateHz)
-                put("bits", t.bitsPerSample)
-                put("ch", t.channels)
+                put("path", t.path); put("title", t.title); put("album", t.album)
+                put("format", t.format); put("size", t.sizeBytes)
+                put("bitrate", t.bitrateKbps); put("duration", t.durationMs)
+                put("sr", t.sampleRateHz); put("bits", t.bitsPerSample); put("ch", t.channels)
+                put("artist", t.artist); put("year", t.year)
             })
         }
         context.getSharedPreferences("slac_prefs", Context.MODE_PRIVATE)
@@ -45,7 +40,9 @@ object LibraryCache {
                     durationMs = o.getLong("duration"),
                     sampleRateHz = o.optInt("sr"),
                     bitsPerSample = o.optInt("bits"),
-                    channels = o.optInt("ch")
+                    channels = o.optInt("ch"),
+                    artist = o.optString("artist", ""),
+                    year = o.optString("year", "")
                 )
             }
         }.getOrDefault(emptyList())

@@ -115,10 +115,13 @@ object LibraryScanner {
                     val duration = if (info != null && info.sampleRate > 0)
                         info.totalSamples * 1000L / info.sampleRate else 0L
                     val bitrate = if (duration > 0) (size * 8 / duration).toInt() else 0
+                    val tags = info?.tags ?: emptyMap()
                     out += Track(
                         path = doc.uri.toString(),
-                        title = name.substringBeforeLast('.'),
-                        album = "SLAC Lossless",
+                        title = tags["TITLE"] ?: name.substringBeforeLast('.'),
+                        artist = tags["ARTIST"] ?: "",
+                        year = tags["DATE"] ?: "",
+                        album = tags["ALBUM"] ?: "SLAC Lossless",
                         format = "SLAC",
                         sizeBytes = size,
                         bitrateKbps = bitrate,
