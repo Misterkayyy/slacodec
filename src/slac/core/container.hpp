@@ -1,5 +1,19 @@
 #pragma once
 
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <limits>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
+
 #include "auto_chunk.hpp"
 #include "block.hpp"
 #include "ms.hpp"
@@ -7,14 +21,6 @@
 #include "crc16.hpp"
 #include "frame.hpp"
 #include "sha256.hpp"
-
-#include <cstdint>
-#include <cstring>
-#include <limits>
-#include <stdexcept>
-#include <vector>
-#include <thread>
-#include <algorithm>
 
 namespace slac {
 
@@ -355,14 +361,10 @@ inline std::vector<uint8_t> encodeSlacFile(
 // DECODE
 // ──────────────────────────────────────────────────────────────
 
-
 // ──────────────────────────────────────────────────────────────
 // METADATA: chunk 'meta' estilo Vorbis Comments (CHAVE=valor)
 // Forward-compatible: decodificadores antigos ignoram este chunk.
 // ──────────────────────────────────────────────────────────────
-#include <fstream>
-#include <cstdio>
-#include <utility>
 
 struct SlacMetadata {
     std::vector<std::pair<std::string, std::string>> fields;
@@ -456,7 +458,6 @@ inline bool addMetaToFile(const std::string& path, const SlacMetadata& meta) {
     std::remove(path.c_str());
     return std::rename((path + ".tmp").c_str(), path.c_str()) == 0;
 }
-
 
 // ──────────────────────────────────────────────────────────────
 // COVER ART: chunk 'covr' (mime + bytes da imagem embutida)
