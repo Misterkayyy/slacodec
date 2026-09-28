@@ -538,7 +538,9 @@ inline std::vector<std::vector<int32_t>> decodeSlacFile(
     SeekTable* out_seek = nullptr,
     HashInfo* out_hash = nullptr,
     bool strict_crc = true,
-    std::vector<core::AutoKeyframe>* out_auto = nullptr)
+    std::vector<core::AutoKeyframe>* out_auto = nullptr,
+    SlacMetadata* out_meta = nullptr,
+    SlacCover* out_covr = nullptr)
 {
     if (file.size() < 12)
         throw std::invalid_argument("decodeSlacFile: too small");
@@ -627,6 +629,24 @@ inline std::vector<std::vector<int32_t>> decodeSlacFile(
             seek.byte_offsets.resize(seek.frame_count);
             for (uint32_t i = 0; i < seek.frame_count; ++i)
                 seek.byte_offsets[i] = detail::readU32LE(payload, payload_sz, p);
+        }
+        else if (id == detail::kChunkMeta) {
+            if (out_meta) {
+                detail::deserializeMeta(payload, payload_sz, *out_meta);
+            }
+        }
+        else if (id == detail::kChunkCovr) {
+            if (out_covr && payload_sz >= 4) {
+                size_t p = 0;
+                uint32_t mime_len = detail::readU32LE(payload, payload_sz, p);
+                if (p + mime_len <= payload_sz) {
+                    out_covr->mime.assign(reinterpret_cast<const char*>(payload + p), mime_len);
+                    p += mime_len;
+                    if (p <= payload_sz) {
+                        out_covr->data.assign(payload + p, payload + payload_sz);
+                    }
+                }
+            }
         }
         else if (id == detail::kChunkHash) {
             hash_payload = payload;

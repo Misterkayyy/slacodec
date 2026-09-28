@@ -408,6 +408,8 @@ static int cmd_decode(int argc, char** argv) {
     slac::SeekTable seek;
     slac::HashInfo hash;
     std::vector<slac::core::AutoKeyframe> auto_kfs;
+    slac::SlacMetadata meta;
+    slac::SlacCover covr;
     std::vector<std::vector<int32_t>> pcm;
 
     try {
@@ -953,7 +955,7 @@ static int cmd_info(int argc, char** argv) {
     std::vector<slac::core::AutoKeyframe> auto_kfs;
 
     try {
-        slac::decodeSlacFile(slac_data, &fmt, &spat, &seek, &hash, true, &auto_kfs);
+        slac::decodeSlacFile(slac_data, &fmt, &spat, &seek, &hash, true, &auto_kfs, &meta, &covr);
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;
@@ -1013,6 +1015,23 @@ static int cmd_info(int argc, char** argv) {
                   << ", reverb=" << count_reverb << "\n";
     } else {
         std::cout << "  present:           no\n";
+    }
+
+    std::cout << "\n[meta]\n";
+    if (!meta.fields.empty()) {
+        for (const auto& [key, value] : meta.fields) {
+            std::cout << "  " << key << ": " << value << "\n";
+        }
+    } else {
+        std::cout << "  (no metadata)\n";
+    }
+
+    std::cout << "\n[covr]\n";
+    if (!covr.data.empty()) {
+        std::cout << "  mime:              " << covr.mime << "\n";
+        std::cout << "  size:              " << covr.data.size() << " bytes\n";
+    } else {
+        std::cout << "  (no cover art)\n";
     }
 
     std::cout << "\n[file]\n";
