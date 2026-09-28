@@ -25,7 +25,7 @@ fun scaleMaxBitmap(b: Bitmap, max: Int): Bitmap {
 fun blurBitmap(src: Bitmap, radius: Int = 6, iterations: Int = 2): Bitmap {
     val bmp = src.copy(Bitmap.Config.ARGB_8888, true)
     var px = IntArray(bmp.width * bmp.height)
-    bmp.getPixels(px, 0, bmp.width, 0, bmp.width, bmp.height)
+    bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
     repeat(iterations) { px = boxBlur(px, bmp.width, bmp.height, radius) }
     bmp.setPixels(px, 0, bmp.width, 0, bmp.width, bmp.height)
     return bmp

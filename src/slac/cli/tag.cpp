@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "core/container.hpp"
+#include "slac/core/container.hpp"
 #include <fstream>
 
 static void usage() {

@@ -132,6 +132,17 @@ fun App(onThemeMode: (Int) -> Unit) {
         firstRoute = false
     }
 
+    fun nextTrack() {
+        val idx = currentIndex ?: return
+        val n = tracks.size
+        if (n == 0) return
+        val target = when {
+            shuffle -> (0 until n).random()
+            idx + 1 < n -> idx + 1
+            repeatMode == 1 -> 0
+            else -> return
+        }
+
     fun handleEnded() {
         when (repeatMode) {
             2 -> {
@@ -234,16 +245,6 @@ fun App(onThemeMode: (Int) -> Unit) {
         }
     }
 
-    fun nextTrack() {
-        val idx = currentIndex ?: return
-        val n = tracks.size
-        if (n == 0) return
-        val target = when {
-            shuffle -> (0 until n).random()
-            idx + 1 < n -> idx + 1
-            repeatMode == 1 -> 0
-            else -> return
-        }
         selectTrack(target)
     }
 

@@ -47,9 +47,9 @@ fun PathIcon(pathData: String, tint: Color, size: Dp = 24.dp, modifier: Modifier
 fun IconTap(
     path: String,
     tint: Color,
-    onClick: () -> Unit,
     size: Dp = 24.dp,
-    pad: Dp = 8.dp
+    pad: Dp = 8.dp,
+    onClick: () -> Unit
 ) {
     Box(
         Modifier
