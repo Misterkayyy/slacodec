@@ -1,5 +1,6 @@
 #pragma once
 
+// ── System includes (must stay BEFORE namespace slac to avoid pollution) ──
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
@@ -13,6 +14,8 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+
 
 #include "auto_chunk.hpp"
 #include "block.hpp"

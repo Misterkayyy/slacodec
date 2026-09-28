@@ -410,6 +410,8 @@ static int cmd_decode(int argc, char** argv) {
     std::vector<slac::core::AutoKeyframe> auto_kfs;
     slac::SlacMetadata meta;
     slac::SlacCover covr;
+    slac::SlacMetadata meta;
+    slac::SlacCover covr;
     std::vector<std::vector<int32_t>> pcm;
 
     try {
