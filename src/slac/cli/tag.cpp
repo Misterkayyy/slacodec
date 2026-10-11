@@ -1,9 +1,12 @@
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <string>
+#include <cstdint>
 #include <vector>
 
 #include "slac/core/container.hpp"
+#include <cstdint>
 #include <fstream>
 
 static void usage() {

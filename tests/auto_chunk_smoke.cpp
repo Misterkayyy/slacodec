@@ -1,6 +1,8 @@
 #include "slac/core/auto_chunk.hpp"
+#include <cstdint>
 #include <iostream>
 #include <vector>
+#include <cstdint>
 #include <cmath>
 #include <cstdlib>
 

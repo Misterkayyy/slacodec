@@ -1,7 +1,9 @@
 #include <slac/core/container.hpp>
+#include <cstdint>
 #include <slac/core/frame.hpp>
 
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <vector>
 

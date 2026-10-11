@@ -1,13 +1,17 @@
 #pragma once
 
 #include "block_processor.hpp"
+#include <cstdint>
 #include "ring_buffer.hpp"
 #include "streaming_decoder.hpp"
 
+#include <cstdint>
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <cstdint>
 #include <thread>
 #include <vector>
 

@@ -1,5 +1,6 @@
 #include <slac/dsp/reverb_registry.hpp>
 
+#include <cstdint>
 #include <iostream>
 #include <string>
 

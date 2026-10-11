@@ -76,11 +76,21 @@ add_executable(slac_realtime_player_smoke
 add_executable(slacodec-cli
     src/slac/cli/main.cpp
 )
-# Força API 26+ para o CLI (AAudio requer API 26).
-set_target_properties(slacodec-cli PROPERTIES
-    CXX_STANDARD 17
-    COMPILE_FLAGS "--target=aarch64-linux-android26"
-)
+
+# Configuracoes especificas por plataforma
+if(ANDROID)
+    # Android: API 26+ para o CLI (AAudio requer API 26)
+    set_target_properties(slacodec-cli PROPERTIES
+        CXX_STANDARD 17
+        COMPILE_FLAGS "--target=aarch64-linux-android26"
+    )
+elseif(WIN32)
+    # Windows: configuracao padrao
+    set_target_properties(slacodec-cli PROPERTIES
+        CXX_STANDARD 17
+        WIN32_EXECUTABLE FALSE  # Console app
+    )
+endif()
 
 foreach(target IN ITEMS
     slac_core_smoke
@@ -122,11 +132,32 @@ foreach(target IN ITEMS
     endif()
 endforeach()
 
-# Linkagem específica do CLI (AAudio + pthread).
-target_link_libraries(slacodec-cli PRIVATE
-    /system/lib64/libaaudio.so
-    pthread
-)
+# Linkagem específica por plataforma
+if(ANDROID)
+    # Android: AAudio + pthread
+    target_link_libraries(slacodec-cli PRIVATE
+        /system/lib64/libaaudio.so
+        pthread
+    )
+elseif(WIN32)
+    # Windows: WASAPI (audio nativo) + COM
+    target_link_libraries(slacodec-cli PRIVATE
+        ole32      # COM (Component Object Model)
+        oleaut32   # OLE Automation
+        uuid       # UUIDs (usados por COM)
+        winmm      # Windows Multimedia (backup)
+    )
+    target_compile_definitions(slacodec-cli PRIVATE
+        NOMINMAX              # Evita conflito com std::min/max
+        WIN32_LEAN_AND_MEAN   # Headers mais leves
+        _WIN32_WINNT=0x0601   # Windows 7+ (WASAPI)
+    )
+else()
+    # Linux/Outros: ALSA + pthread
+    target_link_libraries(slacodec-cli PRIVATE
+        pthread
+    )
+endif()
 
 option(SLAC_ENABLE_SANITIZERS "Enable ASan and UBSan" OFF)
 option(SLAC_BUILD_FUZZER "Build libFuzzer target (requires clang)" OFF)

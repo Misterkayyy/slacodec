@@ -1,7 +1,9 @@
 #include <slac/dsp/reverb_engine.hpp>
 
+#include <cstdint>
 #include <cmath>
 #include <iostream>
+#include <cstdint>
 #include <string>
 
 using namespace slac::dsp;

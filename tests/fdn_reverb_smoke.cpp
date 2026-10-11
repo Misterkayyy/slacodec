@@ -1,7 +1,9 @@
 #include <slac/dsp/fdn_reverb.hpp>
 
+#include <cstdint>
 #include <cmath>
 #include <iostream>
+#include <cstdint>
 #include <vector>
 
 using namespace slac::dsp;

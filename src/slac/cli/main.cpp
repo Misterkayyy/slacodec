@@ -726,11 +726,18 @@ static int cmd_play(int argc, char** argv) {
         return 1;
     }
 
+    #if defined(__ANDROID__)
     std::cout << "Playback started (AAudio low-latency). Ctrl+C to stop.\n";
+#elif defined(_WIN32)
+    std::cout << "Playback started (WASAPI). Ctrl+C to stop.\n";
+#else
+    std::cout << "Playback started. Ctrl+C to stop.\n";
+#endif
 
-    while (!player.finished()) {
+while (engine.isRunning()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
+    
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     engine.stop();
