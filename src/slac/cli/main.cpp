@@ -18,6 +18,7 @@
 #include "slac/dsp/fdn_reverb.hpp"
 #include <chrono>
 #include <thread>
+#include <iomanip>
 
 #include <algorithm>
 #include <cmath>
@@ -83,13 +84,16 @@ static bool write_file(const std::string& path,
 }
 
 // Conversao float->PCM compartilhada por encode e verify (idempotente).
-static int32_t float_to_pcm(float v) {
-    float s = v * 32768.0f;
-    if (s >  32767.0f) s =  32767.0f;
-    if (s < -32768.0f) s = -32768.0f;
+// Conversão float->PCM parametrizada por bit-depth.
+static int32_t float_to_pcm(float v, int bits) {
+    float scale = static_cast<float>(1 << (bits - 1));
+    float s = v * scale;
+    float max_val = scale - 1.0f;
+    float min_val = -scale;
+    if (s > max_val) s = max_val;
+    if (s < min_val) s = min_val;
     return static_cast<int32_t>(s);
 }
-
 // ──────────────────────────────────────────────────────────────
 // Encoder presets (§3.5)
 // ──────────────────────────────────────────────────────────────
@@ -241,21 +245,32 @@ static int cmd_encode(int argc, char** argv) {
         return 1;
     }
 
+    // ── NOVO: Detecção e conversão de bit-depth ──
+    int effective_bits = wav.bits_per_sample;
+    if (wav.bits_per_sample > 24) {
+        std::cerr << "Warning: input is " << wav.bits_per_sample
+                  << "-bit. SLAC converts to 24-bit (lossy but transparent).\n";
+        effective_bits = 24;
+    } else if (wav.bits_per_sample == 8) {
+        std::cerr << "Warning: input is 8-bit. SLAC converts to 16-bit.\n";
+        effective_bits = 16;
+    }
+
     auto channels_data = wav.channels();
     std::vector<std::vector<int32_t>> pcm(wav.num_channels);
     for (int c = 0; c < wav.num_channels; ++c) {
         pcm[c].resize(wav.num_frames);
         for (uint32_t i = 0; i < wav.num_frames; ++i)
-            pcm[c][i] = float_to_pcm(channels_data[c][i]);
+            pcm[c][i] = float_to_pcm(channels_data[c][i], effective_bits); // Parametrizado
     }
 
     std::vector<slac::core::AutoKeyframe> auto_kfs;
     if (auto_spatial && wav.num_channels == 2) {
         std::cout << "Analyzing audio for spatial parameters...\n";
 
-        // 1. Analise global para o SpatMetadata (fallback/base)
+        // 1. Analise global (usando effective_bits)
         slac::dsp::AudioFeatures features = slac::dsp::analyze_audio(
-            pcm[0], pcm[1], 16, wav.sample_rate);
+            pcm[0], pcm[1], effective_bits, wav.sample_rate);
         slac::dsp::derive_spatial_params(features);
 
         wideness   = features.suggested_wideness_permille / 10;
@@ -273,9 +288,9 @@ static int cmd_encode(int argc, char** argv) {
         std::cout << "    reverb_wet:         " << reverb_wet << "%\n";
         std::cout << "    preset_id:          " << preset_id  << "\n";
 
-        // 2. Geracao dos keyframes com histerese
+        // 2. Geracao dos keyframes (usando effective_bits)
         std::cout << "Generating auto-spatial keyframes (window=2s, hop=1s, hysteresis=on)...\n";
-        auto_kfs = slac::dsp::generate_auto_keyframes(pcm, 16, wav.sample_rate);
+        auto_kfs = slac::dsp::generate_auto_keyframes(pcm, effective_bits, wav.sample_rate);
         std::cout << "  Generated " << auto_kfs.size() << " keyframes.\n";
     } else if (auto_spatial) {
         std::cerr << "Warning: --auto-spatial requires stereo, ignoring.\n";
@@ -294,7 +309,7 @@ static int cmd_encode(int argc, char** argv) {
 
     slac::SlacFormat fmt;
     fmt.sampleRate    = wav.sample_rate;
-    fmt.bitsPerSample = 16;
+    fmt.bitsPerSample = static_cast<uint8_t>(effective_bits); // Lossless nativo!
     fmt.channelCount  = static_cast<uint8_t>(wav.num_channels);
     fmt.frameSize     = static_cast<uint32_t>(frame_size);
     fmt.mode          = (wav.num_channels == 2)
@@ -313,7 +328,6 @@ static int cmd_encode(int argc, char** argv) {
         fill_fallback(spat, spat.preset_id);
     }
 
-    // Seta o bit 0 do flags se houver automacao
     if (!auto_kfs.empty() && has_spatial) {
         spat.flags |= 0x01; // bit 0 = has_automation
     }
@@ -341,8 +355,9 @@ static int cmd_encode(int argc, char** argv) {
         return 1;
     }
 
+    // Cálculo de tamanho usando effective_bits
     uint64_t raw_size = static_cast<uint64_t>(wav.num_frames)
-                      * wav.num_channels * 2;
+                      * wav.num_channels * (effective_bits / 8);
     double ratio = (slac_data.size() > 0)
         ? static_cast<double>(raw_size) / static_cast<double>(slac_data.size())
         : 0.0;
@@ -352,6 +367,11 @@ static int cmd_encode(int argc, char** argv) {
     std::cout << "Encoded: " << input_path << " -> " << output_path << "\n";
     std::cout << "  Channels:    " << static_cast<int>(wav.num_channels) << "\n";
     std::cout << "  Sample rate: " << wav.sample_rate << " Hz\n";
+    std::cout << "  Bit depth:   " << effective_bits << "-bit";
+    if (effective_bits != wav.bits_per_sample) {
+        std::cout << " (converted from " << wav.bits_per_sample << "-bit)";
+    }
+    std::cout << "\n";
     std::cout << "  Samples:     " << wav.num_frames << "\n";
     std::cout << "  Frame size:  " << frame_size << " samples/frame\n";
     std::cout << "  Num frames:  " << num_frames << "\n";
@@ -362,7 +382,7 @@ static int cmd_encode(int argc, char** argv) {
               << (entropy_range ? "range (EXPERIMENTAL)" : "rice") << "\n";
     std::cout << "  Input size:  " << raw_size << " bytes\n";
     std::cout << "  Output size: " << slac_data.size() << " bytes\n";
-    std::cout << "  Ratio:       " << ratio << ":1\n";
+    std::cout << "  Ratio:       " << std::fixed << std::setprecision(2) << ratio << ":1\n";
 
     if (has_spatial) {
         std::cout << "  Spatial:     wideness=" << wideness
@@ -775,8 +795,9 @@ static int cmd_verify(int argc, char** argv) {
 
     std::vector<std::vector<int32_t>> decoded;
     slac::HashInfo hash;
+    slac::SlacFormat fmt;
     try {
-        decoded = slac::decodeSlacFile(slac_data, nullptr, nullptr, nullptr, &hash);
+        decoded = slac::decodeSlacFile(slac_data, &fmt, nullptr, nullptr, &hash);  // ← passe &fmt
     } catch (const std::exception& e) {
         std::cerr << "Decode error: " << e.what() << "\n";
         return 1;
@@ -802,7 +823,7 @@ static int cmd_verify(int argc, char** argv) {
         }
         size_t n = channels[c].size();
         for (size_t i = 0; i < n; ++i) {
-            int32_t orig = float_to_pcm(channels[c][i]);
+            int32_t orig = float_to_pcm(channels[c][i], static_cast<int>(fmt.bitsPerSample));
             if (orig != decoded[c][i]) {
                 ++mismatches;
                 if (first_index < 0) {

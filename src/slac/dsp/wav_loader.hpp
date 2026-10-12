@@ -13,6 +13,7 @@ struct WavData {
     uint32_t sample_rate = 0;
     uint16_t num_channels = 0;
     uint32_t num_frames = 0;
+    uint16_t bits_per_sample = 16;
 
     // Interleaved float32 samples, normalized to [-1.0, +1.0].
     // Total size = num_frames * num_channels.
@@ -96,11 +97,20 @@ inline WavData load_wav(const std::string& path) {
             throw std::runtime_error("load_wav: chunk exceeds file size");
         }
 
-        if (chunk_id == 0x20746D66) { // "fmt "
+                if (chunk_id == 0x20746D66) { // "fmt "
             audio_format = read_u16(pos + 8);
             num_channels = read_u16(pos + 8 + 2);
             sample_rate = read_u32(pos + 8 + 4);
             bits_per_sample = read_u16(pos + 8 + 14);
+
+            // ═══════════════════════════════════════════════════════════
+            // WAVE_FORMAT_EXTENSIBLE (0xFFFE): usado para 24-bit, float, >2ch
+            // O formato real está no SubFormat GUID (offset 24 dentro do fmt)
+            // ═══════════════════════════════════════════════════════════
+            if (audio_format == 0xFFFE) {
+                uint16_t sub_format = read_u16(pos + 8 + 24);
+                audio_format = sub_format;  // 0x0001 = PCM, 0x0003 = IEEE float
+            }
         }
         else if (chunk_id == 0x61746164) { // "data"
             data_ptr = raw.data() + pos + 8;
@@ -131,6 +141,7 @@ inline WavData load_wav(const std::string& path) {
     wav.sample_rate = sample_rate;
     wav.num_channels = num_channels;
     wav.num_frames = num_frames;
+    wav.bits_per_sample = bits_per_sample;
     wav.samples.resize(num_frames * num_channels);
 
     for (uint32_t i = 0; i < num_frames * num_channels; ++i) {
