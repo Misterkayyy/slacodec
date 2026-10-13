@@ -27,6 +27,15 @@ tmp/
 # Por padrão, não commitar WAVs grandes.
 # Depois podemos abrir exceções para vetores pequenos e determinísticos.
 *.wav
+*.flac
+*.mp3
+*.ogg
+*.opus
+*.m4a
+*.aac
+*.slac
+*.bin
+*.out
 
 # Exceções úteis:
 # - manter HRIR, se você quiser

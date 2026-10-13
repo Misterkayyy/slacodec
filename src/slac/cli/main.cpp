@@ -11,6 +11,7 @@
 #include <slac/dsp/processor.hpp>
 #include <slac/dsp/reverb_engine.hpp>
 #include <slac/dsp/wav_loader.hpp>
+#include "slac/dsp/audio_converter.hpp"
 #include <slac/dsp/analyzer.hpp>
 #include <slac/dsp/spatial_chain.hpp>
 #include "slac/rt/realtime_player.hpp"
@@ -231,9 +232,14 @@ static int cmd_encode(int argc, char** argv) {
     bool entropy_range = has_flag(argc, argv, "--entropy-range") ||
                          preset.use_range_coding;
 
-    slac::dsp::WavData wav;
+        slac::dsp::WavData wav;
     try {
-        wav = slac::dsp::load_wav(input_path);
+        int src_bits = 0;
+        wav = slac::dsp::load_any_audio(input_path, &src_bits);
+        if (src_bits > 0) {
+            std::cout << "  (converted via ffmpeg from "
+                    << src_bits << "-bit source)\n";
+        }
     } catch (const std::exception& e) {
         std::cerr << "Error reading input: " << e.what() << "\n";
         return 1;
@@ -780,12 +786,17 @@ static int cmd_verify(int argc, char** argv) {
     std::string slac_path = argv[3];
 
     slac::dsp::WavData wav;
-    try {
-        wav = slac::dsp::load_wav(wav_path);
-    } catch (const std::exception& e) {
-        std::cerr << "Error reading WAV: " << e.what() << "\n";
-        return 1;
+try {
+    int src_bits = 0;
+    wav = slac::dsp::load_any_audio(wav_path, &src_bits);
+    if (src_bits > 0) {
+        std::cout << "  (converted via ffmpeg from "
+                  << src_bits << "-bit source)\n";
     }
+} catch (const std::exception& e) {
+    std::cerr << "Error reading input: " << e.what() << "\n";
+    return 1;
+}
 
     std::vector<uint8_t> slac_data;
     if (!read_file(slac_path, slac_data)) {
