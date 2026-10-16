@@ -1,10 +1,5 @@
 #pragma once
 
-// ═══════════════════════════════════════════════════════════════════════════
-// CRÍTICO: Headers do Windows DEVEM estar no TOPO ABSOLUTO do arquivo,
-// FORA de qualquer namespace ou classe. Se colocados dentro de namespace,
-// o MinGW gera centenas de erros de "extern C" dentro de classe.
-// ═══════════════════════════════════════════════════════════════════════════
 #if defined(_WIN32)
     #ifndef NOMINMAX
     #define NOMINMAX
@@ -73,7 +68,6 @@ private:
     std::thread audio_thread_;
     std::atomic<bool> stop_requested_{false};
 
-    // Buffers para resampling com carry-over
     std::vector<float> carry_L_, carry_R_;
     size_t carry_count_ = 0;
 
@@ -81,9 +75,6 @@ private:
 #endif
 };
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ANDROID (AAudio)
-// ═══════════════════════════════════════════════════════════════════════════
 #if defined(__ANDROID__)
 
 inline bool AudioEngine::start(uint32_t sample_rate, int channels, size_t block_size, RealtimePlayer* player) {
@@ -124,13 +115,7 @@ inline void AudioEngine::stop() {
 }
 
 inline bool AudioEngine::isRunning() const {
-#if defined(__ANDROID__)
     return running_.load(std::memory_order_acquire);
-#elif defined(_WIN32)
-    return running_.load(std::memory_order_acquire);
-#endif
-}
-
 }
 
 inline aaudio_data_callback_result_t AudioEngine::onAudioReady(
@@ -138,7 +123,6 @@ inline aaudio_data_callback_result_t AudioEngine::onAudioReady(
 {
     auto* e = static_cast<AudioEngine*>(userdata);
     auto* out = static_cast<float*>(audioData);
-    
     if (e->cb_L_.size() < static_cast<size_t>(numFrames)) {
         e->cb_L_.resize(numFrames); e->cb_R_.resize(numFrames);
     }
@@ -146,9 +130,7 @@ inline aaudio_data_callback_result_t AudioEngine::onAudioReady(
         for (int32_t i = 0; i < numFrames * e->channels_; ++i) out[i] = 0.0f;
         return AAUDIO_CALLBACK_RESULT_CONTINUE;
     }
-    
     e->player_->process_block(e->cb_L_.data(), e->cb_R_.data());
-    
     if (e->channels_ == 2) {
         for (int32_t i = 0; i < numFrames; ++i) {
             out[i*2+0] = e->cb_L_[i]; out[i*2+1] = e->cb_R_[i];
@@ -157,18 +139,14 @@ inline aaudio_data_callback_result_t AudioEngine::onAudioReady(
         for (int32_t i = 0; i < numFrames; ++i) out[i] = e->cb_L_[i];
     }
     
-    // CORREÇÃO: Sinalizar término e pedir ao AAudio para parar o stream
     if (e->player_->finished()) {
         e->running_.store(false, std::memory_order_release);
-        return AAUDIO_CALLBACK_RESULT_STOP; // <-- MUDANÇA CRÍTICA
+        return AAUDIO_CALLBACK_RESULT_STOP;
     }
     
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// WINDOWS (WASAPI)
-// ═══════════════════════════════════════════════════════════════════════════
 #elif defined(_WIN32)
 
 inline bool AudioEngine::start(uint32_t /*sample_rate*/, int channels, size_t block_size, RealtimePlayer* player) {
@@ -189,7 +167,6 @@ inline bool AudioEngine::start(uint32_t /*sample_rate*/, int channels, size_t bl
                            reinterpret_cast<void**>(&audio_client_));
     if (FAILED(hr) || !audio_client_) return false;
 
-    // Em shared mode, usar o mix format do dispositivo
     WAVEFORMATEX* mix_format = nullptr;
     hr = audio_client_->GetMixFormat(&mix_format);
     if (FAILED(hr) || !mix_format) return false;
@@ -198,7 +175,7 @@ inline bool AudioEngine::start(uint32_t /*sample_rate*/, int channels, size_t bl
                     (mix_format->wFormatTag == WAVE_FORMAT_EXTENSIBLE);
     if (!is_float) { CoTaskMemFree(mix_format); return false; }
 
-    REFERENCE_TIME buffer_duration = 1000000; // 100ms
+    REFERENCE_TIME buffer_duration = 1000000;
     hr = audio_client_->Initialize(AUDCLNT_SHAREMODE_SHARED,
                                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                                    buffer_duration, 0, mix_format, nullptr);
@@ -218,7 +195,6 @@ inline bool AudioEngine::start(uint32_t /*sample_rate*/, int channels, size_t bl
     channels_ = mix_format->nChannels;
     CoTaskMemFree(mix_format);
 
-    // Preencher buffer inicial (necessário para event-driven)
     UINT32 buffer_frames = 0;
     audio_client_->GetBufferSize(&buffer_frames);
     BYTE* initial_data = nullptr;
@@ -233,11 +209,11 @@ inline bool AudioEngine::start(uint32_t /*sample_rate*/, int channels, size_t bl
 inline bool AudioEngine::play() {
     if (!audio_client_) return false;
     stop_requested_.store(false, std::memory_order_release);
-    SetEvent(buffer_event_); // Acorda o motor de áudio
+    SetEvent(buffer_event_);
     HRESULT hr = audio_client_->Start();
     if (FAILED(hr)) return false;
     running_.store(true, std::memory_order_release);
-    audio_thread_ = std::thread([this]() { audio_thread_func(); });
+    audio_thread_ = std::thread(&AudioEngine::audio_thread_func, this);
     return true;
 }
 
@@ -364,15 +340,11 @@ inline void AudioEngine::audio_thread_func() {
                 }
             }
         } else if (wait_result == WAIT_TIMEOUT) {
-            // ═══════════════════════════════════════════════════════════
-            // CORREÇÃO: Sinalizar término quando o player acabou
-            // ═══════════════════════════════════════════════════════════
             if (player_ && player_->finished()) {
                 running_.store(false, std::memory_order_release);
                 break;
             }
         } else {
-            // WAIT_FAILED ou outro erro - encerrar
             running_.store(false, std::memory_order_release);
             break;
         }
