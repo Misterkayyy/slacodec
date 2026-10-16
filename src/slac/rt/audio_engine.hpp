@@ -124,9 +124,13 @@ inline void AudioEngine::stop() {
 }
 
 inline bool AudioEngine::isRunning() const {
-    return running_.load(std::memory_order_acquire) &&
-           stream_ != nullptr &&
-           AAudioStream_getState(stream_) == AAUDIO_STREAM_STATE_STARTED;
+#if defined(__ANDROID__)
+    return running_.load(std::memory_order_acquire);
+#elif defined(_WIN32)
+    return running_.load(std::memory_order_acquire);
+#endif
+}
+
 }
 
 inline aaudio_data_callback_result_t AudioEngine::onAudioReady(
@@ -134,6 +138,7 @@ inline aaudio_data_callback_result_t AudioEngine::onAudioReady(
 {
     auto* e = static_cast<AudioEngine*>(userdata);
     auto* out = static_cast<float*>(audioData);
+    
     if (e->cb_L_.size() < static_cast<size_t>(numFrames)) {
         e->cb_L_.resize(numFrames); e->cb_R_.resize(numFrames);
     }
@@ -141,7 +146,9 @@ inline aaudio_data_callback_result_t AudioEngine::onAudioReady(
         for (int32_t i = 0; i < numFrames * e->channels_; ++i) out[i] = 0.0f;
         return AAUDIO_CALLBACK_RESULT_CONTINUE;
     }
+    
     e->player_->process_block(e->cb_L_.data(), e->cb_R_.data());
+    
     if (e->channels_ == 2) {
         for (int32_t i = 0; i < numFrames; ++i) {
             out[i*2+0] = e->cb_L_[i]; out[i*2+1] = e->cb_R_[i];
@@ -149,10 +156,13 @@ inline aaudio_data_callback_result_t AudioEngine::onAudioReady(
     } else {
         for (int32_t i = 0; i < numFrames; ++i) out[i] = e->cb_L_[i];
     }
-    // CORREÇÃO: sinalizar término quando player acabou
+    
+    // CORREÇÃO: Sinalizar término e pedir ao AAudio para parar o stream
     if (e->player_->finished()) {
         e->running_.store(false, std::memory_order_release);
+        return AAUDIO_CALLBACK_RESULT_STOP; // <-- MUDANÇA CRÍTICA
     }
+    
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 

@@ -1,10 +1,8 @@
 // src/slac/cli/main.cpp
 //
 // SLACodec CLI — Spatial Lossless Audio Codec
-// Subcommands: encode, decode, info, verify, gen
+// Subcommands: encode, decode, info, verify, gen, play
 // Presets: fast | balanced | high | extreme
-// Cadeia espacial: widening -> HRIR -> reverb (IR ou FDN) -> headroom
-// Range coder: EXPERIMENTAL, opt-in via --entropy-range
 
 #include <slac/core/container.hpp>
 #include <slac/core/wav_writer.hpp>
@@ -17,24 +15,85 @@
 #include "slac/rt/realtime_player.hpp"
 #include "slac/rt/audio_engine.hpp"
 #include "slac/dsp/fdn_reverb.hpp"
-#include <chrono>
-#include <thread>
-#include <iomanip>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 
-static constexpr const char* SLAC_VERSION = "0.6.0-headroom";
+static constexpr const char* SLAC_VERSION = "0.7.0";
 
-// ──────────────────────────────────────────────────────────────
-// Argument helpers
-// ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// UI HELPERS (ProgressBar + Spinner)
+// ═══════════════════════════════════════════════════════════════
+
+class ProgressBar {
+public:
+    ProgressBar(size_t total, const std::string& label)
+        : total_(total), label_(label), current_(0) {}
+
+    void update(size_t current) {
+        current_ = current;
+        float percent = static_cast<float>(current_) / static_cast<float>(total_);
+        int pos = static_cast<int>(40.0f * percent);
+
+        std::cout << "\r" << label_ << " [";
+        for (int i = 0; i < 40; ++i) {
+            if (i < pos) std::cout << "=";
+            else if (i == pos) std::cout << ">";
+            else std::cout << " ";
+        }
+        std::cout << "] " << std::fixed << std::setprecision(0) << (percent * 100.0f) << "%";
+        std::cout.flush();
+    }
+
+    void done() {
+        update(total_);
+        std::cout << "\n";
+    }
+
+private:
+    size_t total_, current_;
+    std::string label_;
+};
+
+class Spinner {
+public:
+    Spinner(const std::string& label) : label_(label), active_(true) {
+        thread_ = std::thread(&Spinner::run, this);
+    }
+    ~Spinner() {
+        active_ = false;
+        if (thread_.joinable()) thread_.join();
+        std::cout << "\r" << std::string(80, ' ') << "\r";
+    }
+
+private:
+    void run() {
+        const char* frames[] = {"-", "\\", "|", "/"};
+        int i = 0;
+        while (active_) {
+            std::cout << "\r" << frames[i] << " " << label_ << std::flush;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            i = (i + 1) % 4;
+        }
+    }
+    std::string label_;
+    std::atomic<bool> active_;
+    std::thread thread_;
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ARGUMENT HELPERS
+// ═══════════════════════════════════════════════════════════════
 
 static bool has_flag(int argc, char** argv, const char* flag) {
     for (int i = 1; i < argc; ++i) {
@@ -55,37 +114,50 @@ static std::string get_opt(int argc, char** argv, const char* name,
 
 static int get_opt_int(int argc, char** argv, const char* name, int default_val) {
     std::string s = get_opt(argc, argv, name, std::to_string(default_val));
-    try { return std::stoi(s); }
-    catch (...) { return default_val; }
+    try { return std::stoi(s); } catch (...) { return default_val; }
 }
 
-// ──────────────────────────────────────────────────────────────
-// File I/O helpers
-// ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// FILE I/O HELPERS
+// ═══════════════════════════════════════════════════════════════
 
 static bool read_file(const std::string& path, std::vector<uint8_t>& out) {
-    std::ifstream in(path, std::ios::binary);
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
     if (!in.is_open()) return false;
-    in.seekg(0, std::ios::end);
     size_t size = static_cast<size_t>(in.tellg());
     in.seekg(0, std::ios::beg);
     out.resize(size);
-    in.read(reinterpret_cast<char*>(out.data()),
-            static_cast<std::streamsize>(size));
+
+    ProgressBar bar(size, "Reading");
+    size_t chunk = 65536;
+    size_t read_total = 0;
+    while (read_total < size) {
+        size_t to_read = std::min(chunk, size - read_total);
+        in.read(reinterpret_cast<char*>(out.data() + read_total), to_read);
+        read_total += to_read;
+        bar.update(read_total);
+    }
+    bar.done();
     return true;
 }
 
-static bool write_file(const std::string& path,
-                       const std::vector<uint8_t>& data) {
+static bool write_file(const std::string& path, const std::vector<uint8_t>& data) {
     std::ofstream out(path, std::ios::binary);
     if (!out.is_open()) return false;
-    out.write(reinterpret_cast<const char*>(data.data()),
-              static_cast<std::streamsize>(data.size()));
+
+    ProgressBar bar(data.size(), "Writing");
+    size_t chunk = 65536;
+    size_t written = 0;
+    while (written < data.size()) {
+        size_t to_write = std::min(chunk, data.size() - written);
+        out.write(reinterpret_cast<const char*>(data.data() + written), to_write);
+        written += to_write;
+        bar.update(written);
+    }
+    bar.done();
     return true;
 }
 
-// Conversao float->PCM compartilhada por encode e verify (idempotente).
-// Conversão float->PCM parametrizada por bit-depth.
 static int32_t float_to_pcm(float v, int bits) {
     float scale = static_cast<float>(1 << (bits - 1));
     float s = v * scale;
@@ -95,9 +167,10 @@ static int32_t float_to_pcm(float v, int bits) {
     if (s < min_val) s = min_val;
     return static_cast<int32_t>(s);
 }
-// ──────────────────────────────────────────────────────────────
-// Encoder presets (§3.5)
-// ──────────────────────────────────────────────────────────────
+
+// ═══════════════════════════════════════════════════════════════
+// ENCODER PRESETS
+// ═══════════════════════════════════════════════════════════════
 
 struct EncoderPreset {
     const char* name;
@@ -109,81 +182,16 @@ struct EncoderPreset {
 };
 
 static EncoderPreset get_preset(const std::string& name) {
-    if (name == "fast")
-        return {"fast",     2048,  4, 15, false, false};
-    if (name == "balanced")
-        return {"balanced", 4096,  8, 15, true,  false};
-    if (name == "high")
-        return {"high",     4096, 12, 15, true,  false};
-    if (name == "extreme")
-        return {"extreme",  4096, 16, 15, true,  false};
+    if (name == "fast")     return {"fast",     2048,  4, 15, false, false};
+    if (name == "balanced") return {"balanced", 4096,  8, 15, true,  false};
+    if (name == "high")     return {"high",     4096, 12, 15, true,  false};
+    if (name == "extreme")  return {"extreme",  4096, 16, 15, true,  false};
     return {"balanced", 4096, 8, 15, true, false};
 }
 
-// ──────────────────────────────────────────────────────────────
-// Usage / version
-// ──────────────────────────────────────────────────────────────
-
-static void print_usage() {
-    std::cout <<
-R"(SLACodec CLI v)" << SLAC_VERSION << R"( — Spatial Lossless Audio Codec
-
-Usage:
-  slacodec-cli encode <input.wav> <output.slac> [options]
-  slacodec-cli decode <input.slac> <output.wav> [options]
-  slacodec-cli info   <input.slac>
-  slacodec-cli verify <original.wav> <input.slac>
-  slacodec-cli gen    <name> <out.wav>
-
-Gen names (corpus sintetico deterministico):
-  silence | sine | noise | transient | wasted | mono | stereo-wide | stereo-asym
-
-Encode options:
-  --preset-encode <name>   Encoder preset: fast|balanced|high|extreme
-  --adaptive               Force adaptive stereo decorrelation
-  --fixed-ms               Force fixed M/S (disable adaptive)
-  --frame-size <n>         Samples per frame (overrides preset)
-  --lpc-order <n>          Max LPC order (overrides preset)
-  --lpc-shift <n>          LPC coefficient shift (default: 15)
-  --entropy-range          Use EXPERIMENTAL range coder (opt-in)
-
-  --auto-spatial           Auto-derive spatial params from audio analysis
-  --wideness <0-150>       Stereo wideness % (default: 100)
-  --reverb-wet <0-100>     Reverb wet % (default: 0)
-  --preset <0-255>         Reverb preset ID (default: 0)
-
-Decode options:
-  --spatial                Apply spatial DSP chain (widening -> HRIR -> reverb)
-  --hrir <path>            Apply true-stereo HRIR (spatial signature) before reverb
-  --ir <path>              Path to convolution reverb IR WAV
-  --ir-dir <path>          Directory containing reverb IR WAVs (default: ./ir)
-  --fixed-reverb           Disable content-adaptive wet ducking
-  --limit-mode <m>         normalize | loudness | limit | none (default: normalize)
-  --hrir-echo-trim <0-100> Atenua ecos da HRIR apos o tap direto (%; 100 = off)
-  --no-limit               Disable headroom management entirely
-  --no-auto                Disable spatial automation even if auto chunk present
-  --partitioned            Use partitioned FFT convolution (streaming-ready)
-
-Verify:
-  Decodes <input.slac> and compares sample-by-sample against
-  <original.wav>. Prints VERIFY OK (bit-exact) plus SHA-256 hash
-  status, or VERIFY FAIL with mismatch count and first position.
-
-  -h, --help               Show this help
-  -v, --version            Show version
-)";
-}
-
-static void print_version() {
-    std::cout << "slacodec-cli " << SLAC_VERSION << "\n";
-    std::cout << "SLAC container — frames, adaptive decorrelation, presets,\n";
-    std::cout << "hash chunk (SHA-256), verify, golden corpus,\n";
-    std::cout << "spatial chain with unity-gain HRIR + headroom management\n";
-}
-
-// ──────────────────────────────────────────────────────────────
-// spat fallback descriptors (§2.6)
-// ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// SPAT FALLBACK DESCRIPTORS
+// ═══════════════════════════════════════════════════════════════
 
 static void fill_fallback(slac::SpatMetadata& spat, uint8_t preset_id) {
     switch (preset_id) {
@@ -197,9 +205,9 @@ static void fill_fallback(slac::SpatMetadata& spat, uint8_t preset_id) {
     }
 }
 
-// ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
 // ENCODE
-// ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
 
 static int cmd_encode(int argc, char** argv) {
     if (argc < 4) {
@@ -215,12 +223,7 @@ static int cmd_encode(int argc, char** argv) {
 
     bool auto_spatial = has_flag(argc, argv, "--auto-spatial");
 
-    int wideness   = 100;
-    int reverb_wet = 0;
-    int preset_id  = 0;
-
-    int frame_size = get_opt_int(argc, argv, "--frame-size",
-                                 static_cast<int>(preset.frame_size));
+    int frame_size = get_opt_int(argc, argv, "--frame-size", static_cast<int>(preset.frame_size));
     int lpc_order  = get_opt_int(argc, argv, "--lpc-order", preset.max_lpc_order);
     int lpc_shift  = get_opt_int(argc, argv, "--lpc-shift", preset.lpc_shift);
 
@@ -229,16 +232,15 @@ static int cmd_encode(int argc, char** argv) {
     bool adaptive = force_adaptive || (!force_fixed && preset.adaptive);
     if (force_fixed) adaptive = false;
 
-    bool entropy_range = has_flag(argc, argv, "--entropy-range") ||
-                         preset.use_range_coding;
+    bool entropy_range = has_flag(argc, argv, "--entropy-range") || preset.use_range_coding;
 
-        slac::dsp::WavData wav;
+    // ── Load input ──
+    slac::dsp::WavData wav;
     try {
         int src_bits = 0;
         wav = slac::dsp::load_any_audio(input_path, &src_bits);
         if (src_bits > 0) {
-            std::cout << "  (converted via ffmpeg from "
-                    << src_bits << "-bit source)\n";
+            std::cout << "  (converted from " << src_bits << "-bit source via ffmpeg)\n";
         }
     } catch (const std::exception& e) {
         std::cerr << "Error reading input: " << e.what() << "\n";
@@ -251,30 +253,41 @@ static int cmd_encode(int argc, char** argv) {
         return 1;
     }
 
-    // ── NOVO: Detecção e conversão de bit-depth ──
+    // ── Bit-depth handling ──
     int effective_bits = wav.bits_per_sample;
     if (wav.bits_per_sample > 24) {
         std::cerr << "Warning: input is " << wav.bits_per_sample
-                  << "-bit. SLAC converts to 24-bit (lossy but transparent).\n";
+                  << "-bit. Converting to 24-bit.\n";
         effective_bits = 24;
     } else if (wav.bits_per_sample == 8) {
-        std::cerr << "Warning: input is 8-bit. SLAC converts to 16-bit.\n";
+        std::cerr << "Warning: input is 8-bit. Converting to 16-bit.\n";
         effective_bits = 16;
     }
 
+    // ── Float -> PCM ──
     auto channels_data = wav.channels();
     std::vector<std::vector<int32_t>> pcm(wav.num_channels);
-    for (int c = 0; c < wav.num_channels; ++c) {
-        pcm[c].resize(wav.num_frames);
-        for (uint32_t i = 0; i < wav.num_frames; ++i)
-            pcm[c][i] = float_to_pcm(channels_data[c][i], effective_bits); // Parametrizado
+    {
+        ProgressBar bar(wav.num_frames, "Converting to PCM");
+        for (int c = 0; c < wav.num_channels; ++c) {
+            pcm[c].resize(wav.num_frames);
+            for (uint32_t i = 0; i < wav.num_frames; ++i) {
+                pcm[c][i] = float_to_pcm(channels_data[c][i], effective_bits);
+            }
+            if (c == 0) bar.update(wav.num_frames);
+        }
+        bar.done();
     }
 
+    // ── Spatial analysis ──
     std::vector<slac::core::AutoKeyframe> auto_kfs;
+    int wideness   = 100;
+    int reverb_wet = 0;
+    int preset_id  = 0;
+
     if (auto_spatial && wav.num_channels == 2) {
         std::cout << "Analyzing audio for spatial parameters...\n";
 
-        // 1. Analise global (usando effective_bits)
         slac::dsp::AudioFeatures features = slac::dsp::analyze_audio(
             pcm[0], pcm[1], effective_bits, wav.sample_rate);
         slac::dsp::derive_spatial_params(features);
@@ -283,21 +296,8 @@ static int cmd_encode(int argc, char** argv) {
         reverb_wet = features.suggested_reverb_wet_pct;
         preset_id  = features.suggested_preset_id;
 
-        std::cout << "  Analysis (global base):\n";
-        std::cout << "    stereo_width:       " << features.stereo_width       << "\n";
-        std::cout << "    stereo_correlation: " << features.stereo_correlation << "\n";
-        std::cout << "    spectral_centroid:  " << features.spectral_centroid  << " Hz\n";
-        std::cout << "    spectral_flux:      " << features.spectral_flux      << "\n";
-        std::cout << "    rms_energy:         " << features.rms_energy         << "\n";
-        std::cout << "  Derived (base):\n";
-        std::cout << "    wideness:           " << wideness   << "%\n";
-        std::cout << "    reverb_wet:         " << reverb_wet << "%\n";
-        std::cout << "    preset_id:          " << preset_id  << "\n";
-
-        // 2. Geracao dos keyframes (usando effective_bits)
-        std::cout << "Generating auto-spatial keyframes (window=2s, hop=1s, hysteresis=on)...\n";
         auto_kfs = slac::dsp::generate_auto_keyframes(pcm, effective_bits, wav.sample_rate);
-        std::cout << "  Generated " << auto_kfs.size() << " keyframes.\n";
+        std::cout << "  Generated " << auto_kfs.size() << " spatial keyframes.\n";
     } else if (auto_spatial) {
         std::cerr << "Warning: --auto-spatial requires stereo, ignoring.\n";
         auto_spatial = false;
@@ -313,9 +313,10 @@ static int cmd_encode(int argc, char** argv) {
     reverb_wet = std::max(0, std::min(reverb_wet, 100));
     preset_id  = std::max(0, std::min(preset_id,  255));
 
+    // ── Build format ──
     slac::SlacFormat fmt;
     fmt.sampleRate    = wav.sample_rate;
-    fmt.bitsPerSample = static_cast<uint8_t>(effective_bits); // Lossless nativo!
+    fmt.bitsPerSample = static_cast<uint8_t>(effective_bits);
     fmt.channelCount  = static_cast<uint8_t>(wav.num_channels);
     fmt.frameSize     = static_cast<uint32_t>(frame_size);
     fmt.mode          = (wav.num_channels == 2)
@@ -335,7 +336,7 @@ static int cmd_encode(int argc, char** argv) {
     }
 
     if (!auto_kfs.empty() && has_spatial) {
-        spat.flags |= 0x01; // bit 0 = has_automation
+        spat.flags |= 0x01;
     }
 
     const std::vector<slac::core::AutoKeyframe>* auto_kfs_ptr = nullptr;
@@ -343,67 +344,59 @@ static int cmd_encode(int argc, char** argv) {
         auto_kfs_ptr = &auto_kfs;
     }
 
+    // ── Encode ──
     std::vector<uint8_t> slac_data;
-    try {
-        slac_data = slac::encodeSlacFile(
-            pcm, fmt,
-            has_spatial ? &spat : nullptr,
-            lpc_order, lpc_shift,
-            entropy_range,
-            auto_kfs_ptr);
-    } catch (const std::exception& e) {
-        std::cerr << "Encode error: " << e.what() << "\n";
-        return 1;
+    {
+        Spinner spin("Encoding");
+        try {
+            slac_data = slac::encodeSlacFile(
+                pcm, fmt,
+                has_spatial ? &spat : nullptr,
+                lpc_order, lpc_shift,
+                entropy_range,
+                auto_kfs_ptr);
+        } catch (const std::exception& e) {
+            std::cerr << "Encode error: " << e.what() << "\n";
+            return 1;
+        }
     }
 
+    // ── Write output ──
     if (!write_file(output_path, slac_data)) {
         std::cerr << "Error: cannot write: " << output_path << "\n";
         return 1;
     }
 
-    // Cálculo de tamanho usando effective_bits
+    // ── Summary ──
     uint64_t raw_size = static_cast<uint64_t>(wav.num_frames)
                       * wav.num_channels * (effective_bits / 8);
     double ratio = (slac_data.size() > 0)
         ? static_cast<double>(raw_size) / static_cast<double>(slac_data.size())
         : 0.0;
-    uint32_t num_frames = static_cast<uint32_t>(
-        (wav.num_frames + frame_size - 1) / frame_size);
 
-    std::cout << "Encoded: " << input_path << " -> " << output_path << "\n";
-    std::cout << "  Channels:    " << static_cast<int>(wav.num_channels) << "\n";
-    std::cout << "  Sample rate: " << wav.sample_rate << " Hz\n";
-    std::cout << "  Bit depth:   " << effective_bits << "-bit";
-    if (effective_bits != wav.bits_per_sample) {
-        std::cout << " (converted from " << wav.bits_per_sample << "-bit)";
-    }
     std::cout << "\n";
-    std::cout << "  Samples:     " << wav.num_frames << "\n";
-    std::cout << "  Frame size:  " << frame_size << " samples/frame\n";
-    std::cout << "  Num frames:  " << num_frames << "\n";
-    std::cout << "  Preset:      " << preset_name
-              << " (adaptive=" << (adaptive ? "yes" : "no")
-              << ", lpc=" << lpc_order << ")\n";
-    std::cout << "  Entropy:     "
-              << (entropy_range ? "range (EXPERIMENTAL)" : "rice") << "\n";
-    std::cout << "  Input size:  " << raw_size << " bytes\n";
-    std::cout << "  Output size: " << slac_data.size() << " bytes\n";
+    std::cout << "  Input:       " << input_path << "\n";
+    std::cout << "  Output:      " << output_path << "\n";
+    std::cout << "  Format:      " << wav.sample_rate << " Hz / "
+              << effective_bits << "-bit / "
+              << static_cast<int>(wav.num_channels) << " ch\n";
+    std::cout << "  Preset:      " << preset_name << "\n";
+    std::cout << "  Raw size:    " << raw_size << " bytes\n";
+    std::cout << "  SLAC size:   " << slac_data.size() << " bytes\n";
     std::cout << "  Ratio:       " << std::fixed << std::setprecision(2) << ratio << ":1\n";
 
     if (has_spatial) {
         std::cout << "  Spatial:     wideness=" << wideness
                   << "% wet=" << reverb_wet
                   << "% preset=" << preset_id << "\n";
-    } else {
-        std::cout << "  Spatial:     none (SLAC Core)\n";
     }
 
     return 0;
 }
 
-// ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
 // DECODE
-// ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
 
 static int cmd_decode(int argc, char** argv) {
     if (argc < 4) {
@@ -436,47 +429,32 @@ static int cmd_decode(int argc, char** argv) {
     std::vector<slac::core::AutoKeyframe> auto_kfs;
     std::vector<std::vector<int32_t>> pcm;
 
-    try {
-        pcm = slac::decodeSlacFile(slac_data, &fmt, &spat, &seek, &hash, true, &auto_kfs);
-    } catch (const std::exception& e) {
-        std::cerr << "Decode error: " << e.what() << "\n";
-        return 1;
+    {
+        Spinner spin("Decoding");
+        try {
+            pcm = slac::decodeSlacFile(slac_data, &fmt, &spat, &seek, &hash, true, &auto_kfs);
+        } catch (const std::exception& e) {
+            std::cerr << "Decode error: " << e.what() << "\n";
+            return 1;
+        }
     }
 
-    std::cout << "Decoded: " << input_path << "\n";
-    std::cout << "  Channels:    " << static_cast<int>(fmt.channelCount) << "\n";
-    std::cout << "  Sample rate: " << fmt.sampleRate << " Hz\n";
-    std::cout << "  Samples:     " << (pcm.empty() ? 0 : pcm[0].size()) << "\n";
-    std::cout << "  Frame size:  " << fmt.frameSize << "\n";
-    std::cout << "  Num frames:  " << seek.frame_count << "\n";
-    std::cout << "  Decorrelation: "
-              << (fmt.mode == slac::DecorrelationMode::Adaptive ? "adaptive"
-                : fmt.mode == slac::DecorrelationMode::MidSideFixed ? "fixed M/S"
-                : "none") << "\n";
-
     if (hash.present && !hash.match) {
-        std::cerr << "  WARNING: SHA-256 mismatch on decoded PCM!\n";
+        std::cerr << "Warning: SHA-256 mismatch on decoded PCM!\n";
     }
 
     if (spatial && fmt.channelCount == 2) {
-        std::cout << "  Applying spatial DSP (float chain + headroom)...\n";
-
         slac::dsp::SpatialChainConfig cfg;
         cfg.wideness  = spat.wideness_permille / 1000.0f;
         cfg.mono_safe = (spat.flags & 0x02u) != 0u;
-	cfg.hrir_echo_trim = static_cast<float>(
+        cfg.hrir_echo_trim = static_cast<float>(
             get_opt_int(argc, argv, "--hrir-echo-trim", 100)) / 100.0f;
-	cfg.use_partitioned_conv = partitioned_conv;
-	cfg.conv_block_size = 128;
+        cfg.use_partitioned_conv = partitioned_conv;
+        cfg.conv_block_size = 128;
 
-        // Automação espacial
         if (!auto_kfs.empty() && !no_auto) {
             cfg.auto_keyframes = auto_kfs;
             cfg.use_auto = true;
-            std::cout << "    Auto:     " << auto_kfs.size() 
-                      << " keyframes (wideness + reverb interpolation)\n";
-        } else if (!auto_kfs.empty() && no_auto) {
-            std::cout << "    Auto:     disabled (--no-auto)\n";
         }
 
         if (has_flag(argc, argv, "--no-limit")) {
@@ -506,10 +484,8 @@ static int cmd_decode(int argc, char** argv) {
                     throw std::runtime_error("HRIR needs 2 or 4 channels");
                 }
                 cfg.hrir = &hrir;
-                std::cout << "    HRIR:     " << hrir_path
-                          << " (true-stereo 4-path, unity-gain)\n";
             } catch (const std::exception& e) {
-                std::cerr << "    Warning: HRIR load failed (" << e.what() << ")\n";
+                std::cerr << "Warning: HRIR load failed (" << e.what() << ")\n";
             }
         }
 
@@ -538,74 +514,52 @@ static int cmd_decode(int argc, char** argv) {
                     rir.rl.assign(chs[1].size(), 0.0f);
                 }
                 cfg.reverb_ir = &rir;
-                std::cout << "    Reverb:   preset="
-                          << static_cast<int>(spat.preset_id)
-                          << " wet=" << static_cast<int>(spat.reverb_wet_pct)
-                          << "% engine=IR convolution\n";
-            } catch (...) {
-                std::cout << "    Reverb:   preset="
-                          << static_cast<int>(spat.preset_id)
-                          << " wet=" << static_cast<int>(spat.reverb_wet_pct)
-                          << "% engine="
-                          << (adaptive_reverb ? "FDN synth (adaptive)"
-                                              : "FDN synth (fixed)")
-                          << "\n";
-            }
-        } else {
-            std::cout << "    Reverb:   skipped (preset=0 or wet=0)\n";
+            } catch (...) {}
         }
 
-        slac::dsp::SpatialChainStats st =
+        {
+            Spinner spin("Applying spatial DSP");
             slac::dsp::apply_spatial_chain(pcm[0], pcm[1], fmt.bitsPerSample,
                                            fmt.sampleRate, cfg);
-
-        std::cout << "    Wideness: " << (spat.wideness_permille / 10.0) << "%\n";
-        std::cout << "    Peak in:  " << st.peak_input
-                  << " (" << st.peak_input_db << " dBFS)\n";
-        std::cout << "    Peak pre-limit: " << st.peak_before_limit
-                  << " (" << st.peak_before_limit_db << " dBFS)\n";
-
-        if (cfg.limit_mode == LM::None) {
-            std::cout << "    Headroom: OFF (--no-limit / --limit-mode none)\n";
-        } else if (cfg.limit_mode == LM::Normalize) {
-            std::cout << "    Headroom: uniform " << st.uniform_gain_db
-                      << " dB (peak align a fonte, zero pumping)\n";
-        } else if (cfg.limit_mode == LM::Loudness) {
-            std::cout << "    Headroom: loudness align " << st.uniform_gain_db
-                      << " dB uniform + limiter max "
-                      << st.max_gain_reduction_db << " dB\n";
-        } else {
-            std::cout << "    Limiter:  max " << st.max_gain_reduction_db
-                      << " dB reduction\n";
         }
-    } else if (spatial) {
-        std::cout << "  Spatial DSP skipped (mono or no spat chunk).\n";
-    } else {
-        std::cout << "  Mode: SLAC Core (no spatial DSP).\n";
     }
 
-    try {
-        slac::write_wav(output_path, pcm, fmt.sampleRate);
-    } catch (const std::exception& e) {
-        std::cerr << "Error writing output: " << e.what() << "\n";
-        return 1;
+    {
+        Spinner spin("Writing WAV");
+        try {
+            slac::write_wav(output_path, pcm, fmt.sampleRate);
+        } catch (const std::exception& e) {
+            std::cerr << "Error writing output: " << e.what() << "\n";
+            return 1;
+        }
     }
 
-    std::cout << "  Output: " << output_path << "\n";
+    std::cout << "\n";
+    std::cout << "  Input:       " << input_path << "\n";
+    std::cout << "  Output:      " << output_path << "\n";
+    std::cout << "  Format:      " << fmt.sampleRate << " Hz / "
+              << static_cast<int>(fmt.bitsPerSample) << "-bit / "
+              << static_cast<int>(fmt.channelCount) << " ch\n";
+    std::cout << "  Samples:     " << (pcm.empty() ? 0 : pcm[0].size()) << "\n";
+
     return 0;
 }
+
+// ═══════════════════════════════════════════════════════════════
+// PLAY
+// ═══════════════════════════════════════════════════════════════
 
 static int cmd_play(int argc, char** argv) {
     if (argc < 3) {
         std::cerr << "Usage: slacodec-cli play <input.slac> [options]\n";
         std::cerr << "Options:\n";
-        std::cerr << "  --spatial              Apply spatial chain (auto-reads file metadata)\n";
-        std::cerr << "  --hrir <path>          True-stereo HRIR (overrides default)\n";
+        std::cerr << "  --spatial              Apply spatial chain\n";
+        std::cerr << "  --hrir <path>          True-stereo HRIR\n";
         std::cerr << "  --ir <path>            Convolution reverb IR\n";
-        std::cerr << "  --partitioned          Use partitioned convolver (default for playback)\n";
-        std::cerr << "  --makeup-db <N>        Volume boost post-chain (default 6 dB with HRIR)\n";
+        std::cerr << "  --partitioned          Use partitioned convolver\n";
+        std::cerr << "  --makeup-db <N>        Volume boost post-chain (default 6 dB)\n";
         std::cerr << "  --no-auto              Disable automation keyframes\n";
-        std::cerr << "  --limit-mode <mode>    limit|normalize|loudness|none (default normalize)\n";
+        std::cerr << "  --limit-mode <mode>    limit|normalize|loudness|none\n";
         return 1;
     }
 
@@ -618,10 +572,8 @@ static int cmd_play(int argc, char** argv) {
     std::string hrir_path = get_opt(argc, argv, "--hrir", "");
     std::string ir_path   = get_opt(argc, argv, "--ir", "");
 
-    // Config inicial (só pra abrir o player - será substituída pelos metadados)
     slac::dsp::SpatialChainConfig cfg;
 
-    // Abre o player (lê spat + auto chunks do arquivo internamente)
     slac::rt::RealtimePlayer player;
     if (!player.open(input_path, cfg, 128)) {
         std::cerr << "Error: cannot open: " << input_path << "\n";
@@ -629,28 +581,20 @@ static int cmd_play(int argc, char** argv) {
     }
 
     std::cout << "Playing: " << input_path << "\n";
-    std::cout << "  sample_rate: " << player.sample_rate()
-              << "  channels: " << static_cast<int>(player.channels())
-              << "  total: " << player.total_samples() << " samples\n";
+    std::cout << "  " << player.sample_rate() << " Hz / "
+              << static_cast<int>(player.channels()) << " ch / "
+              << player.total_samples() << " samples\n";
 
-	if (spatial && player.channels() == 2) {
-        std::cout << "  Applying spatial DSP...\n";
-
+    if (spatial && player.channels() == 2) {
         slac::dsp::SpatialChainConfig cfg_spatial;
         const auto& spat = player.spat();
         const auto& auto_kfs = player.auto_keyframes();
 
-        // ── Automação espacial ──
         if (!auto_kfs.empty() && !no_auto) {
             cfg_spatial.auto_keyframes = auto_kfs;
             cfg_spatial.use_auto = true;
-            std::cout << "    Auto:     " << auto_kfs.size()
-                      << " keyframes (wideness + reverb interpolation)\n";
-        } else if (!auto_kfs.empty() && no_auto) {
-            std::cout << "    Auto:     disabled (--no-auto)\n";
         }
 
-        // Configuração base
         cfg_spatial.wideness = spat.wideness_permille / 1000.0f;
         cfg_spatial.mono_safe = (spat.flags & 0x02u) != 0u;
         cfg_spatial.hrir_echo_trim = static_cast<float>(
@@ -660,7 +604,6 @@ static int cmd_play(int argc, char** argv) {
         cfg_spatial.makeup_gain_db = static_cast<float>(
             get_opt_int(argc, argv, "--makeup-db", 6));
 
-        // Limiter
         std::string lm = get_opt(argc, argv, "--limit-mode", "normalize");
         if (lm == "limit")         cfg_spatial.limit_mode = LM::Limit;
         else if (lm == "loudness") cfg_spatial.limit_mode = LM::Loudness;
@@ -668,7 +611,6 @@ static int cmd_play(int argc, char** argv) {
         else                       cfg_spatial.limit_mode = LM::Normalize;
         cfg_spatial.ceiling = 0.988f;
 
-        // ── HRIR (se fornecido) ──
         slac::dsp::TrueStereoIR hrir;
         if (!hrir_path.empty()) {
             try {
@@ -685,20 +627,12 @@ static int cmd_play(int argc, char** argv) {
                 }
                 cfg_spatial.hrir = &hrir;
                 cfg_spatial.hrir_unity_gain = true;
-                std::cout << "    HRIR:     " << hrir_path << "\n";
-                if (cfg_spatial.makeup_gain_db != 0.0f && cfg_spatial.hrir != nullptr) {
-                    std::cout << "    Makeup:   " << cfg_spatial.makeup_gain_db << " dB\n";
-                }
             } catch (const std::exception& e) {
                 std::cerr << "Error loading HRIR: " << e.what() << "\n";
                 return 1;
             }
         }
 
-	// ── Wideness (sempre mostrar) ──
-        std::cout << "    Wideness: " << spat.wideness_permille / 10.0f << "%\n";
-
-        // ── Reverb (se houver preset > 0 no arquivo) ──
         if (spat.preset_id > 0 && spat.reverb_wet_pct > 0) {
             cfg_spatial.reverb_enabled = true;
             cfg_spatial.reverb_adaptive = true;
@@ -725,23 +659,14 @@ static int cmd_play(int argc, char** argv) {
                     loaded_rir = true;
                 } catch (...) {}
             }
-
-            std::cout << "    Reverb:   preset=" << static_cast<int>(spat.preset_id)
-                      << " wet=" << static_cast<int>(spat.reverb_wet_pct) << "%"
-                      << " engine=" << (loaded_rir ? "IR convolution" : "FDN synth")
-                      << "\n";
-        } else {
-            std::cout << "    Reverb:   skipped (preset=0 or wet=0)\n";
         }
 
-        // Aplica a configuração espacial
         player.reconfigure(cfg_spatial);
     }
 
-    // Engine de áudio
     slac::rt::AudioEngine engine;
     if (!engine.start(player.sample_rate(), player.channels(), 128, &player)) {
-        std::cerr << "Error: failed to start AAudio engine\n";
+        std::cerr << "Error: failed to start audio engine\n";
         return 1;
     }
 
@@ -752,18 +677,17 @@ static int cmd_play(int argc, char** argv) {
         return 1;
     }
 
-    #if defined(__ANDROID__)
-    std::cout << "Playback started (AAudio low-latency). Ctrl+C to stop.\n";
+#if defined(__ANDROID__)
+    std::cout << "  Backend: AAudio (low-latency)\n";
 #elif defined(_WIN32)
-    std::cout << "Playback started (WASAPI). Ctrl+C to stop.\n";
-#else
-    std::cout << "Playback started. Ctrl+C to stop.\n";
+    std::cout << "  Backend: WASAPI\n";
 #endif
+    std::cout << "  Press Ctrl+C to stop.\n";
 
-while (engine.isRunning()) {
+    while (engine.isRunning()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
-    
+
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     engine.stop();
@@ -772,9 +696,9 @@ while (engine.isRunning()) {
     return 0;
 }
 
-// ──────────────────────────────────────────────────────────────
-// VERIFY (bit-exact + SHA-256)
-// ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// VERIFY
+// ═══════════════════════════════════════════════════════════════
 
 static int cmd_verify(int argc, char** argv) {
     if (argc < 4) {
@@ -786,17 +710,16 @@ static int cmd_verify(int argc, char** argv) {
     std::string slac_path = argv[3];
 
     slac::dsp::WavData wav;
-try {
-    int src_bits = 0;
-    wav = slac::dsp::load_any_audio(wav_path, &src_bits);
-    if (src_bits > 0) {
-        std::cout << "  (converted via ffmpeg from "
-                  << src_bits << "-bit source)\n";
+    try {
+        int src_bits = 0;
+        wav = slac::dsp::load_any_audio(wav_path, &src_bits);
+        if (src_bits > 0) {
+            std::cout << "  (converted from " << src_bits << "-bit source via ffmpeg)\n";
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error reading input: " << e.what() << "\n";
+        return 1;
     }
-} catch (const std::exception& e) {
-    std::cerr << "Error reading input: " << e.what() << "\n";
-    return 1;
-}
 
     std::vector<uint8_t> slac_data;
     if (!read_file(slac_path, slac_data)) {
@@ -808,7 +731,7 @@ try {
     slac::HashInfo hash;
     slac::SlacFormat fmt;
     try {
-        decoded = slac::decodeSlacFile(slac_data, &fmt, nullptr, nullptr, &hash);  // ← passe &fmt
+        decoded = slac::decodeSlacFile(slac_data, &fmt, nullptr, nullptr, &hash);
     } catch (const std::exception& e) {
         std::cerr << "Decode error: " << e.what() << "\n";
         return 1;
@@ -826,23 +749,28 @@ try {
     int64_t  first_index = -1;
     int      first_channel = -1;
 
-    for (size_t c = 0; c < decoded.size(); ++c) {
-        if (channels[c].size() != decoded[c].size()) {
-            std::cout << "VERIFY FAIL: length mismatch ch " << c << ": "
-                      << channels[c].size() << " vs " << decoded[c].size() << "\n";
-            return 1;
-        }
-        size_t n = channels[c].size();
-        for (size_t i = 0; i < n; ++i) {
-            int32_t orig = float_to_pcm(channels[c][i], static_cast<int>(fmt.bitsPerSample));
-            if (orig != decoded[c][i]) {
-                ++mismatches;
-                if (first_index < 0) {
-                    first_index = static_cast<int64_t>(i);
-                    first_channel = static_cast<int>(c);
+    {
+        ProgressBar bar(wav.num_frames, "Comparing samples");
+        for (size_t c = 0; c < decoded.size(); ++c) {
+            if (channels[c].size() != decoded[c].size()) {
+                std::cout << "\nVERIFY FAIL: length mismatch ch " << c << ": "
+                          << channels[c].size() << " vs " << decoded[c].size() << "\n";
+                return 1;
+            }
+            size_t n = channels[c].size();
+            for (size_t i = 0; i < n; ++i) {
+                int32_t orig = float_to_pcm(channels[c][i], static_cast<int>(fmt.bitsPerSample));
+                if (orig != decoded[c][i]) {
+                    ++mismatches;
+                    if (first_index < 0) {
+                        first_index = static_cast<int64_t>(i);
+                        first_channel = static_cast<int>(c);
+                    }
                 }
+                if (c == 0 && i % 8192 == 0) bar.update(i);
             }
         }
+        bar.done();
     }
 
     if (mismatches != 0) {
@@ -858,19 +786,19 @@ try {
               << " frames x " << static_cast<int>(wav.num_channels) << " ch)\n";
 
     if (hash.present) {
-        std::cout << "  hash: " << (hash.match ? "SHA-256 OK (" : "MISMATCH (")
-                  << slac::sha256_hex(hash.digest) << ")\n";
+        std::cout << "  SHA-256: " << (hash.match ? "OK" : "MISMATCH")
+                  << " (" << slac::sha256_hex(hash.digest) << ")\n";
         if (!hash.match) return 1;
     } else {
-        std::cout << "  hash: absent (arquivo anterior ao chunk hash)\n";
+        std::cout << "  SHA-256: absent (file predates hash chunk)\n";
     }
 
     return 0;
 }
 
-// ──────────────────────────────────────────────────────────────
-// GEN (corpus sintetico deterministico para golden files)
-// ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// GEN
+// ═══════════════════════════════════════════════════════════════
 
 static int cmd_gen(int argc, char** argv) {
     if (argc < 4) {
@@ -896,7 +824,6 @@ static int cmd_gen(int argc, char** argv) {
     const double pi = 3.14159265358979323846;
 
     if (name == "silence") {
-        // permanece zerado
     } else if (name == "sine" || name == "mono") {
         for (size_t i = 0; i < n; ++i) {
             int32_t v = static_cast<int32_t>(12000.0 * std::sin(2.0 * pi * 440.0 * i / sr));
@@ -945,9 +872,9 @@ static int cmd_gen(int argc, char** argv) {
     return 0;
 }
 
-// ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
 // INFO
-// ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
 
 static const char* category_name(uint8_t c) {
     switch (c) {
@@ -966,7 +893,7 @@ static const char* decorrelation_name(slac::DecorrelationMode m) {
     switch (m) {
         case slac::DecorrelationMode::None:         return "None";
         case slac::DecorrelationMode::MidSideFixed: return "Mid/Side (fixed)";
-        case slac::DecorrelationMode::Adaptive:     return "Adaptive (L/R, M/S, L/S, R/S)";
+        case slac::DecorrelationMode::Adaptive:     return "Adaptive";
         default: return "Unknown";
     }
 }
@@ -1000,86 +927,38 @@ static int cmd_info(int argc, char** argv) {
         return 1;
     }
 
-    std::cout << "=== SLACodec File Info ===\n\n";
+    auto print_row = [](const std::string& key, const std::string& val) {
+        std::cout << "  " << std::left << std::setw(20) << key << " " << val << "\n";
+    };
 
-    std::cout << "[fmt]\n";
-    std::cout << "  sample_rate:       " << fmt.sampleRate << "\n";
-    std::cout << "  bits_per_sample:   " << static_cast<int>(fmt.bitsPerSample) << "\n";
-    std::cout << "  channels:          " << static_cast<int>(fmt.channelCount) << "\n";
-    std::cout << "  total_samples:     " << fmt.totalSamples << "\n";
-    std::cout << "  frame_size:        " << fmt.frameSize << " samples/frame\n";
-    std::cout << "  decorrelation:     " << decorrelation_name(fmt.mode) << "\n";
-    std::cout << "  encoder_version:   "
-              << static_cast<int>(fmt.encoderMajor) << "."
-              << static_cast<int>(fmt.encoderMinor) << "\n";
+    std::cout << "\n[Audio]\n";
+    print_row("Sample rate", std::to_string(fmt.sampleRate) + " Hz");
+    print_row("Bit depth", std::to_string(fmt.bitsPerSample) + "-bit");
+    print_row("Channels", std::to_string(fmt.channelCount));
+    print_row("Total samples", std::to_string(fmt.totalSamples));
+    print_row("Frame size", std::to_string(fmt.frameSize) + " samples");
+    print_row("Decorrelation", decorrelation_name(fmt.mode));
 
     double duration = (fmt.sampleRate > 0)
         ? static_cast<double>(fmt.totalSamples) / static_cast<double>(fmt.sampleRate)
         : 0.0;
-
     int mins = static_cast<int>(duration) / 60;
     double secs = duration - mins * 60.0;
-    std::cout << "  duration:          " << mins << "m " << secs << "s\n";
+    std::cout << "  " << std::left << std::setw(20) << "Duration"
+              << mins << "m " << std::fixed << std::setprecision(1) << secs << "s\n";
 
-    std::cout << "\n[seek]\n";
-    std::cout << "  frame_count:       " << seek.frame_count << "\n";
-    std::cout << "  frame_size:        " << seek.frame_size << "\n";
-
-    std::cout << "\n[spat]\n";
-    std::cout << "  wideness:          " << (spat.wideness_permille / 10.0) << "%\n";
-    std::cout << "  reverb_wet:        " << static_cast<int>(spat.reverb_wet_pct) << "%\n";
-    std::cout << "  preset_id:         " << static_cast<int>(spat.preset_id) << "\n";
-    std::cout << "  mono_safe:         " << ((spat.flags & 0x02) ? "yes" : "no") << "\n";
-    std::cout << "  has_automation:    " << ((spat.flags & 0x01) ? "yes" : "no") << "\n";
-    std::cout << "  fallback_category: " << category_name(spat.fallback_category) << "\n";
-    std::cout << "  fallback_size:     " << static_cast<int>(spat.fallback_size) << "\n";
-    std::cout << "  fallback_decay:    " << static_cast<int>(spat.fallback_decay) << "\n";
-
-    std::cout << "\n[auto]\n";
+    std::cout << "\n[Spatial]\n";
+    print_row("Wideness", std::to_string(spat.wideness_permille / 10.0) + "%");
+    print_row("Reverb wet", std::to_string(static_cast<int>(spat.reverb_wet_pct)) + "%");
+    print_row("Preset ID", std::to_string(static_cast<int>(spat.preset_id)));
+    print_row("Category", category_name(spat.fallback_category));
+    print_row("Automation", (spat.flags & 0x01) ? "yes" : "no");
     if (!auto_kfs.empty()) {
-        std::cout << "  present:           yes\n";
-        std::cout << "  keyframe_count:    " << auto_kfs.size() << "\n";
-
-        uint32_t min_offset = auto_kfs.front().sample_offset;
-        uint32_t max_offset = auto_kfs.back().sample_offset;
-        std::cout << "  span:              " << min_offset << ".." << max_offset
-                  << " samples (" << (max_offset - min_offset) << " range)\n";
-
-        int count_wideness = 0, count_reverb = 0;
-        for (const auto& kf : auto_kfs) {
-            if (kf.param_id == 0) ++count_wideness;
-            else if (kf.param_id == 1) ++count_reverb;
-        }
-        std::cout << "  params:            wideness=" << count_wideness
-                  << ", reverb=" << count_reverb << "\n";
-    } else {
-        std::cout << "  present:           no\n";
+        print_row("Keyframes", std::to_string(auto_kfs.size()));
     }
 
-    std::cout << "\n[meta]\n";
-    if (!meta.fields.empty()) {
-        for (const auto& [key, value] : meta.fields) {
-            std::cout << "  " << key << ": " << value << "\n";
-        }
-    } else {
-        std::cout << "  (no metadata)\n";
-    }
-
-    std::cout << "\n[covr]\n";
-    if (!covr.data.empty()) {
-        std::cout << "  mime:              " << covr.mime << "\n";
-        std::cout << "  size:              " << covr.data.size() << " bytes\n";
-    } else {
-        std::cout << "  (no cover art)\n";
-    }
-
-    std::cout << "\n[file]\n";
-    std::cout << "  size:              " << slac_data.size() << " bytes\n";
-
-    if (hash.present) {
-        std::cout << "  pcm_sha256:        " << slac::sha256_hex(hash.digest)
-                  << (hash.match ? " (OK)" : " (MISMATCH)") << "\n";
-    }
+    std::cout << "\n[File]\n";
+    print_row("Size", std::to_string(slac_data.size()) + " bytes");
 
     uint64_t raw_size = static_cast<uint64_t>(fmt.totalSamples)
                       * static_cast<uint64_t>(fmt.channelCount)
@@ -1090,17 +969,77 @@ static int cmd_info(int argc, char** argv) {
                      / static_cast<double>(slac_data.size());
         double savings = 100.0 * (1.0 - static_cast<double>(slac_data.size())
                                        / static_cast<double>(raw_size));
-        std::cout << "  raw_pcm_size:      " << raw_size << " bytes\n";
-        std::cout << "  compression:       " << ratio << ":1\n";
-        std::cout << "  space_saved:       " << savings << "%\n";
+        print_row("Raw PCM size", std::to_string(raw_size) + " bytes");
+        print_row("Compression", std::to_string(ratio).substr(0, 4) + ":1");
+        print_row("Space saved", std::to_string(static_cast<int>(savings)) + "%");
+    }
+
+    if (hash.present) {
+        print_row("SHA-256", slac::sha256_hex(hash.digest) + (hash.match ? " (OK)" : " (MISMATCH)"));
+    }
+
+    if (!meta.fields.empty()) {
+        std::cout << "\n[Metadata]\n";
+        for (const auto& [key, value] : meta.fields) {
+            print_row(key, value);
+        }
+    }
+
+    if (!covr.data.empty()) {
+        std::cout << "\n[Cover]\n";
+        print_row("MIME", covr.mime);
+        print_row("Size", std::to_string(covr.data.size()) + " bytes");
     }
 
     return 0;
 }
 
-// ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// USAGE / VERSION
+// ═══════════════════════════════════════════════════════════════
+
+static void print_usage() {
+    std::cout << "SLACodec CLI v" << SLAC_VERSION << " - Spatial Lossless Audio Codec\n\n";
+    std::cout << "Usage:\n";
+    std::cout << "  slacodec-cli encode <input.wav> <output.slac> [options]\n";
+    std::cout << "  slacodec-cli decode <input.slac> <output.wav> [options]\n";
+    std::cout << "  slacodec-cli play   <input.slac> [options]\n";
+    std::cout << "  slacodec-cli info   <input.slac>\n";
+    std::cout << "  slacodec-cli verify <original.wav> <coded.slac>\n";
+    std::cout << "  slacodec-cli gen    <name> <out.wav>\n\n";
+    std::cout << "Encode options:\n";
+    std::cout << "  --preset-encode <name>   fast|balanced|high|extreme\n";
+    std::cout << "  --adaptive               Force adaptive stereo decorrelation\n";
+    std::cout << "  --fixed-ms               Force fixed M/S\n";
+    std::cout << "  --frame-size <n>         Samples per frame\n";
+    std::cout << "  --lpc-order <n>          Max LPC order\n";
+    std::cout << "  --entropy-range          Use experimental range coder\n";
+    std::cout << "  --auto-spatial           Auto-derive spatial params from audio\n";
+    std::cout << "  --wideness <0-150>       Stereo wideness %\n";
+    std::cout << "  --reverb-wet <0-100>     Reverb wet %\n";
+    std::cout << "  --preset <0-255>         Reverb preset ID\n\n";
+    std::cout << "Decode options:\n";
+    std::cout << "  --spatial                Apply spatial DSP chain\n";
+    std::cout << "  --hrir <path>            True-stereo HRIR\n";
+    std::cout << "  --ir <path>              Convolution reverb IR\n";
+    std::cout << "  --no-auto                Disable spatial automation\n";
+    std::cout << "  --limit-mode <m>         normalize|loudness|limit|none\n\n";
+    std::cout << "Play options:\n";
+    std::cout << "  --spatial                Apply spatial chain\n";
+    std::cout << "  --hrir <path>            True-stereo HRIR\n";
+    std::cout << "  --ir <path>              Convolution reverb IR\n";
+    std::cout << "  --makeup-db <N>          Volume boost post-chain\n";
+    std::cout << "  --no-auto                Disable automation keyframes\n\n";
+    std::cout << "Gen names: silence | sine | noise | transient | wasted | mono | stereo-wide | stereo-asym\n";
+}
+
+static void print_version() {
+    std::cout << "slacodec-cli " << SLAC_VERSION << "\n";
+}
+
+// ═══════════════════════════════════════════════════════════════
 // MAIN
-// ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -1123,7 +1062,7 @@ int main(int argc, char** argv) {
     try {
         if (command == "encode") return cmd_encode(argc, argv);
         if (command == "decode") return cmd_decode(argc, argv);
-	else if (command == "play") return cmd_play(argc, argv);
+        if (command == "play")   return cmd_play(argc, argv);
         if (command == "info")   return cmd_info(argc, argv);
         if (command == "verify") return cmd_verify(argc, argv);
         if (command == "gen")    return cmd_gen(argc, argv);
