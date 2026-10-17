@@ -1,4 +1,4 @@
-# SLACodec — Spatial Lossless Audio Codec (v1.0.0)
+# SLACodec — Spatial Lossless Audio Codec
 
 A production-ready lossless audio codec with **integrated spatial processing**, **automatic HRIR embedding**, and **real-time, low-latency playback**.
 
