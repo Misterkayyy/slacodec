@@ -1,0 +1,1 @@
+C:\msys64\home\Kayck\slacodec\app-android\app\src\main\cpp\CMakeLists.txt

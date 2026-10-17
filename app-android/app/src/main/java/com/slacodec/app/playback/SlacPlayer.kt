@@ -10,21 +10,36 @@ class SlacPlayer(private val context: Context) : Player {
     private val jni = SlacodecJni()
     private var handle: Long = 0L
     private var cachedPath: String? = null
-    private var started = false
-    private var stopped = false
-    private var baseMs = 0L
-    private var playStart = 0L
+
     override var onPlaybackStateChanged: ((Boolean) -> Unit)? = null
+
+    var started = false
+        private set
+    var stopped = false
+        private set
 
     fun loadFile(uriString: String): Boolean {
         releaseNative()
         handle = jni.nativeCreate()
         cachedPath = copyUriToCache(Uri.parse(uriString))
+
         val ok = jni.nativeOpen(handle, cachedPath!!)
         started = false
         stopped = false
-        baseMs = 0L
         return ok
+    }
+
+    fun hasEmbeddedHrir(): Boolean {
+    return if (handle != 0L) {
+        // Você vai precisar adicionar este método ao JNI
+        jni.nativeHasEmbeddedHrir(handle)
+    } else false
+    }
+
+    fun getEmbeddedHrirType(): String {
+        return if (handle != 0L) {
+            jni.nativeGetEmbeddedHrirType(handle)
+        } else ""
     }
 
     override fun play() {
@@ -34,18 +49,15 @@ class SlacPlayer(private val context: Context) : Player {
             handle = jni.nativeCreate()
             jni.nativeOpen(handle, cachedPath!!)
             stopped = false
-            baseMs = 0L
         }
         if (!started) {
             started = jni.nativePlay(handle)
-            playStart = System.currentTimeMillis()
             onPlaybackStateChanged?.invoke(started)
         }
     }
 
     override fun pause() {
         if (started) {
-            baseMs = positionMs()
             jni.nativeStop(handle)
             started = false
             stopped = true
@@ -53,15 +65,15 @@ class SlacPlayer(private val context: Context) : Player {
         }
     }
 
-    override fun positionMs(): Long =
-        if (started) baseMs + (System.currentTimeMillis() - playStart) else baseMs
+    override fun seekTo(ms: Long) {
+        if (handle != 0L) {
+            jni.nativeSeek(handle, ms)
+        }
+    }
 
-    override fun durationMs(): Long =
-        if (handle != 0L) jni.nativeGetDurationMs(handle) else 0L
+    override fun positionMs(): Long = if (handle != 0L) jni.nativeGetPositionMs(handle) else 0L
 
-    override fun seekTo(ms: Long) { /* TODO: nativeSeek via seek table */ }
-
-    override fun release() = releaseNative()
+    override fun durationMs(): Long = if (handle != 0L) jni.nativeGetDurationMs(handle) else 0L
 
     fun setUseAuto(on: Boolean) {
         if (handle != 0L) jni.nativeSetUseAuto(handle, on)
@@ -74,6 +86,14 @@ class SlacPlayer(private val context: Context) : Player {
         }
     }
 
+    fun loadHrir(path: String) {
+        if (handle != 0L) {
+            jni.nativeLoadHrir(handle, path)
+        }
+    }
+
+    override fun release() = releaseNative()
+
     private fun releaseNative() {
         if (handle != 0L) {
             jni.nativeStop(handle)
@@ -82,7 +102,6 @@ class SlacPlayer(private val context: Context) : Player {
         }
         started = false
         stopped = false
-        baseMs = 0L
     }
 
     private fun copyUriToCache(uri: Uri): String {

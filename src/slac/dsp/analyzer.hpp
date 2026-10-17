@@ -237,6 +237,41 @@ inline AudioFeatures analyze_audio(
 }
 
 // ──────────────────────────────────────────────────────────────
+// HRIR Recommendation Logic
+// ──────────────────────────────────────────────────────────────
+
+enum class HRIRType : uint8_t {
+    None = 0,
+    TrueStereo = 1,
+    SurroundCrossfeed = 2,
+    SpatialIR = 3
+};
+
+inline HRIRType recommend_hrir(const AudioFeatures& feat) {
+    // 1. Percussivo/Frenético: Fluxo espectral alto e energia significativa
+    if (feat.spectral_flux > 2000.0f && feat.rms_energy > 0.05f) {
+        return HRIRType::TrueStereo;
+    }
+
+    // 2. Espacial: Centróide espectral alto e fluxo moderado
+    if (feat.spectral_centroid > 2000.0f && feat.spectral_flux > 1000.0f) {
+        return HRIRType::SpatialIR;
+    }
+    
+    // 3. Padrão: Equilibrado/Médio
+    return HRIRType::SurroundCrossfeed;
+}
+
+inline std::string get_hrir_path(HRIRType type, const std::string& ir_dir = "./ir") {
+    switch (type) {
+        case HRIRType::TrueStereo: return ir_dir + "/true_stereo.wav";
+        case HRIRType::SurroundCrossfeed: return ir_dir + "/surround_crossfeed.wav";
+        case HRIRType::SpatialIR: return ir_dir + "/spatial_ir.wav";
+        default: return "";
+    }
+}
+
+// ──────────────────────────────────────────────────────────────
 // Map features → spatial parameters
 // ──────────────────────────────────────────────────────────────
 

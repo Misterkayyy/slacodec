@@ -68,6 +68,23 @@ Java_com_slacodec_app_codec_SlacodecJni_nativeStop(JNIEnv*, jobject, jlong h) {
     np->player.stop();
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_slacodec_app_codec_SlacodecJni_nativeSeek(JNIEnv*, jobject, jlong h, jlong positionMs) {
+    auto* np = P(h);
+    if (!np->opened || np->player.sample_rate() == 0) return JNI_FALSE;
+
+    uint64_t target_sample = (static_cast<uint64_t>(positionMs) * np->player.sample_rate()) / 1000ULL;
+    return np->player.seekToSample(target_sample) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_slacodec_app_codec_SlacodecJni_nativeGetPositionMs(JNIEnv*, jobject, jlong h) {
+    auto* np = P(h);
+    if (!np->opened || np->player.sample_rate() == 0) return 0;
+    uint64_t current_sample = np->player.current_sample();
+    return (jlong)((current_sample * 1000ULL) / np->player.sample_rate());
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_slacodec_app_codec_SlacodecJni_nativeSetWideness(JNIEnv*, jobject, jlong h, jfloat w) {
     auto* np = P(h);
@@ -81,6 +98,73 @@ Java_com_slacodec_app_codec_SlacodecJni_nativeSetReverbWet(JNIEnv*, jobject, jlo
     np->cfg.reverb.wet = wet;
     np->cfg.reverb_enabled = wet > 0.001f;
     if (np->opened) np->player.reconfigure(np->cfg);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_slacodec_app_codec_SlacodecJni_nativeLoadHrir(JNIEnv* env, jobject, jlong h, jstring path) {
+    auto* np = P(h);
+    if (!np->opened) return JNI_FALSE;
+    
+    const char* c = env->GetStringUTFChars(path, nullptr);
+    std::string p(c);
+    env->ReleaseStringUTFChars(path, c);
+
+    try {
+        slac::dsp::WavData hw = slac::dsp::load_wav(p);
+        auto chs = hw.channels();
+        
+        slac::dsp::TrueStereoIR ir;
+        ir.sample_rate = hw.sample_rate;
+        
+        if (chs.size() >= 4) {
+            ir.ll = chs[0]; ir.lr = chs[1]; ir.rl = chs[2]; ir.rr = chs[3];
+        } else if (chs.size() == 2) {
+            ir.ll = chs[0]; ir.rr = chs[1];
+            ir.lr.assign(chs[0].size(), 0.0f);
+            ir.rl.assign(chs[1].size(), 0.0f);
+        } else {
+            LOGE("HRIR precisa ter 2 ou 4 canais");
+            return JNI_FALSE;
+        }
+        
+        np->player.setExternalHrir(ir);
+        LOGI("HRIR externa carregada com sucesso: %s", p.c_str());
+        return JNI_TRUE;
+        
+    } catch (const std::exception& e) {
+        LOGE("Falha ao carregar HRIR: %s", e.what());
+        return JNI_FALSE;
+    }
+}
+
+// Adicione após `nativeLoadHrir`:
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_slacodec_app_codec_SlacodecJni_nativeHasEmbeddedHrir(JNIEnv*, jobject, jlong h) {
+    auto* np = P(h);
+    if (!np->opened) return JNI_FALSE;
+    
+    const auto& emb = np->player.decoder().embedded_hrir();
+    return emb.present() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_slacodec_app_codec_SlacodecJni_nativeGetEmbeddedHrirType(JNIEnv* env, jobject, jlong h) {
+    auto* np = P(h);
+    if (!np->opened) return env->NewStringUTF("");
+    
+    const auto& emb = np->player.decoder().embedded_hrir();
+    if (!emb.present()) return env->NewStringUTF("");
+    
+    const char* type_name = "Unknown";
+    switch (emb.type) {
+        case slac::dsp::HRIRType::TrueStereo: type_name = "True Stereo"; break;
+        case slac::dsp::HRIRType::SurroundCrossfeed: type_name = "Surround Crossfeed"; break;
+        case slac::dsp::HRIRType::SpatialIR: type_name = "Spatial IR"; break;
+        default: break;
+    }
+    
+    return env->NewStringUTF(type_name);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -97,7 +181,6 @@ Java_com_slacodec_app_codec_SlacodecJni_nativeGetDurationMs(JNIEnv*, jobject, jl
     return (jlong)((np->player.total_samples() * 1000ULL) / np->player.sample_rate());
 }
 
-// Le apenas o header do container: duracao | sample_rate | canais | bits
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_slacodec_app_codec_SlacodecJni_nativeProbe(JNIEnv* env, jobject, jstring path) {
     const char* c = env->GetStringUTFChars(path, nullptr);

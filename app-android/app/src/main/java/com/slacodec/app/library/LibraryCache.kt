@@ -6,7 +6,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 object LibraryCache {
-    private const val KEY = "library_cache_v1"
+    private const val KEY = "library_cache_v2"
 
     fun save(context: Context, tracks: List<Track>) {
         val arr = JSONArray()
@@ -17,6 +17,7 @@ object LibraryCache {
                 put("bitrate", t.bitrateKbps); put("duration", t.durationMs)
                 put("sr", t.sampleRateHz); put("bits", t.bitsPerSample); put("ch", t.channels)
                 put("artist", t.artist); put("year", t.year)
+                put("genre", t.genre); put("track", t.trackNumber); put("comment", t.comment); put("mod", t.lastModified); put("loaded", t.tagsLoaded)
             })
         }
         context.getSharedPreferences("slac_prefs", Context.MODE_PRIVATE)
@@ -42,7 +43,12 @@ object LibraryCache {
                     bitsPerSample = o.optInt("bits"),
                     channels = o.optInt("ch"),
                     artist = o.optString("artist", ""),
-                    year = o.optString("year", "")
+                    year = o.optString("year", ""),
+                    genre = o.optString("genre", ""),
+                    trackNumber = o.optString("track", ""),
+                    comment = o.optString("comment", ""),
+                    lastModified = o.optLong("mod", 0L),
+                    tagsLoaded = o.optBoolean("loaded", true)
                 )
             }
         }.getOrDefault(emptyList())

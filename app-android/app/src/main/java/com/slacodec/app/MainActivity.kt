@@ -11,7 +11,18 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.runtime.Composable
+import androidx.lifecycle.Lifecycle
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -27,6 +38,7 @@ import androidx.navigation.compose.rememberNavController
 import com.slacodec.app.library.LibraryCache
 import com.slacodec.app.library.LibraryScanner
 import com.slacodec.app.library.SlacHeaderParser
+import com.slacodec.app.model.Track
 import com.slacodec.app.model.formatSampleRate
 import com.slacodec.app.playback.PlayerManager
 import com.slacodec.app.playback.SlacPlayer
@@ -39,9 +51,11 @@ import com.slacodec.app.ui.SlacodecTheme
 import com.slacodec.app.ui.blurBitmap
 import com.slacodec.app.ui.scaleMaxBitmap
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -70,8 +84,13 @@ fun App(onThemeMode: (Int) -> Unit) {
     val nav = rememberNavController()
     val prefs = remember { context.getSharedPreferences("slac_prefs", 0) }
 
-    var hasPermission by remember { mutableStateOf(false) }
-    var tracks by remember { mutableStateOf(LibraryCache.load(context)) }
+    // Sem permissão de mídia: o acesso vem da pasta escolhida (SAF)
+    val hasPermission = true
+    var tracks by remember { mutableStateOf<List<Track>>(emptyList()) }
+    var cacheLoaded by remember { mutableStateOf(false) }
+    var scanning by remember { mutableStateOf(false) }
+    var scanJob by remember { mutableStateOf<Job?>(null) }
+    var loadJob by remember { mutableStateOf<Job?>(null) }
     var currentIndex by remember { mutableStateOf<Int?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
     var position by remember { mutableStateOf(0L) }
@@ -80,6 +99,7 @@ fun App(onThemeMode: (Int) -> Unit) {
     var wideness by remember { mutableStateOf(prefs.getFloat("def_wideness", 1.0f)) }
     var reverbWet by remember { mutableStateOf(prefs.getFloat("def_wet", 0.2f)) }
     var extraInfo by remember { mutableStateOf<String?>(null) }
+    var trackTags by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var favorites by remember { mutableStateOf(prefs.getStringSet("favs", emptySet()) ?: emptySet()) }
     var shuffle by remember { mutableStateOf(false) }
     var repeatMode by remember { mutableStateOf(0) }
@@ -94,10 +114,48 @@ fun App(onThemeMode: (Int) -> Unit) {
     // ── Funcoes locais: ORDEM IMPORTA no Kotlin (sem referencia antecipada) ──
 
     fun rescan() {
-        scope.launch {
-            val fresh = withContext(Dispatchers.IO) { LibraryScanner.scan(context) }
-            tracks = fresh
-            withContext(Dispatchers.IO) { LibraryCache.save(context, fresh) }
+        scanJob?.cancel()
+        scanning = true
+        scanJob = scope.launch {
+            try {
+                val known = tracks
+                val fresh = withContext(Dispatchers.IO) {
+                    // prioridade baixa: o scan não disputa CPU com animações e rolagem
+                    val tid = android.os.Process.myTid()
+                    val old = android.os.Process.getThreadPriority(tid)
+                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+                    try { LibraryScanner.scan(context, known) } finally { android.os.Process.setThreadPriority(old) }
+                }
+                // preserva tags lidas enquanto o scan rodava
+                val latest = tracks.associateBy { it.path }
+                val merged = fresh.map { f ->
+                    latest[f.path]?.takeIf {
+                        it.tagsLoaded && it.sizeBytes == f.sizeBytes && it.lastModified == f.lastModified
+                    } ?: f
+                }
+                if (merged != tracks) { // só recompõe a lista se algo mudou
+                    tracks = merged
+                    withContext(Dispatchers.IO) { LibraryCache.save(context, merged) }
+                }
+            } finally {
+                if (scanJob === coroutineContext[Job]) scanning = false
+            }
+        }
+    }
+
+    // Recebe tags lidas sob demanda pela Biblioteca (troca só os itens afetados)
+    fun mergeLoaded(loaded: List<Track>) {
+        if (loaded.isEmpty()) return
+        val byPath = loaded.associateBy { it.path }
+        tracks = tracks.map { byPath[it.path] ?: it }
+    }
+
+    // Voltar seguro: ignora toques repetidos durante a animação e nunca remove a tela inicial
+    // (dois "voltar" seguidos esvaziavam a pilha e deixavam a tela em branco).
+    fun goBack() {
+        val entry = nav.currentBackStackEntry ?: return
+        if (nav.previousBackStackEntry != null && entry.lifecycle.currentState == Lifecycle.State.RESUMED) {
+            nav.popBackStack()
         }
     }
 
@@ -109,15 +167,26 @@ fun App(onThemeMode: (Int) -> Unit) {
     }
 
     fun selectTrack(index: Int) {
-        scope.launch {
-            currentIndex = index
-            val track = tracks.getOrNull(index) ?: return@launch
-            wideness = prefs.getFloat("def_wideness", 1.0f)
-            reverbWet = prefs.getFloat("def_wet", 0.2f)
-            playerManager.loadFile(context, track.path)
-            playerManager.getCurrentPlayer()?.onPlaybackStateChanged = { playing -> isPlaying = playing }
-            (playerManager.getCurrentPlayer() as? SlacPlayer)?.setUseAuto(useAuto)
-            position = 0L
+        val track = tracks.getOrNull(index) ?: return
+        loadJob?.cancel()
+        currentIndex = index
+        isPlaying = false
+        position = 0L
+        trackTags = emptyMap() // evita mostrar tags da faixa anterior
+        wideness = prefs.getFloat("def_wideness", 1.0f)
+        reverbWet = prefs.getFloat("def_wet", 0.2f)
+        // Navega na hora; o carregamento pesado acontece depois, fora da thread principal.
+        if (nav.currentBackStackEntry?.destination?.route != "player") {
+            nav.navigate("player") { launchSingleTop = true }
+        }
+        loadJob = scope.launch {
+            val player = playerManager.loadFileAsync(context, track.path)
+            player?.onPlaybackStateChanged = { playing -> isPlaying = playing }
+            (player as? SlacPlayer)?.let {
+                it.setUseAuto(useAuto)
+                it.setSpatialParams(wideness, reverbWet)
+            }
+            if (autoplay) player?.play()
             val pair = withContext(Dispatchers.IO) {
                 if (track.isSlac) {
                     val info = runCatching {
@@ -125,6 +194,7 @@ fun App(onThemeMode: (Int) -> Unit) {
                             SlacHeaderParser.parse(it)
                         }
                     }.getOrNull()
+                    trackTags = info?.tags ?: emptyMap()
                     extraInfo = info?.let {
                         listOfNotNull(
                             formatSampleRate(it.sampleRate).ifEmpty { null },
@@ -144,6 +214,7 @@ fun App(onThemeMode: (Int) -> Unit) {
                     }
                 } else {
                     extraInfo = null
+                    trackTags = emptyMap()
                     runCatching {
                         val r = MediaMetadataRetriever()
                         r.setDataSource(context, Uri.parse(track.path))
@@ -161,10 +232,6 @@ fun App(onThemeMode: (Int) -> Unit) {
             }
             artFull = pair?.first
             artBlur = pair?.second
-            if (autoplay) playerManager.getCurrentPlayer()?.play()
-            if (nav.currentBackStackEntry?.destination?.route != "player") {
-                nav.navigate("player")
-            }
         }
     }
 
@@ -210,14 +277,12 @@ fun App(onThemeMode: (Int) -> Unit) {
     }
 
     // ── Launchers ──
-    val permLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted -> hasPermission = granted }
-
     val treeLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
         uri?.let {
+            // pasta única: a nova escolha substitui a anterior
+            LibraryScanner.savedTrees(context).forEach { old -> LibraryScanner.removeTree(context, old) }
             LibraryScanner.addTree(context, it)
             folders = LibraryScanner.savedTrees(context).toList()
             rescan()
@@ -226,10 +291,17 @@ fun App(onThemeMode: (Int) -> Unit) {
 
     // ── Effects (depois das funcoes que eles chamam) ──
     LaunchedEffect(Unit) {
-        permLauncher.launch(
-            if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO
-            else Manifest.permission.READ_EXTERNAL_STORAGE
-        )
+        val cached = withContext(Dispatchers.IO) { LibraryCache.load(context) }
+        if (tracks.isEmpty()) tracks = cached
+        cacheLoaded = true
+    }
+
+    // Salva no cache (com debounce) as tags que foram sendo lidas
+    LaunchedEffect(tracks) {
+        if (cacheLoaded && tracks.isNotEmpty()) {
+            delay(2000)
+            withContext(Dispatchers.IO) { LibraryCache.save(context, tracks) }
+        }
     }
 
     LaunchedEffect(hasPermission) { if (hasPermission) rescan() }
@@ -238,7 +310,10 @@ fun App(onThemeMode: (Int) -> Unit) {
     var firstRoute by remember { mutableStateOf(true) }
     LaunchedEffect(backStack?.destination?.route) {
         val route = backStack?.destination?.route
-        if (route == "library" && !firstRoute && rescanOnOpen && hasPermission) rescan()
+        if (route == "library" && !firstRoute && rescanOnOpen && hasPermission) {
+            delay(500) // espera a animação de transição terminar
+            rescan()
+        }
         firstRoute = false
     }
 
@@ -265,15 +340,42 @@ fun App(onThemeMode: (Int) -> Unit) {
     DisposableEffect(Unit) { onDispose { playerManager.release() } }
 
     // ── Navegacao ──
-    NavHost(navController = nav, startDestination = "library") {
-        composable("library") {
+    NavHost(
+        navController = nav,
+        startDestination = "library",
+        enterTransition = { fadeIn(tween(300)) },
+        exitTransition = { fadeOut(tween(200)) },
+        popEnterTransition = { fadeIn(tween(300)) },
+        popExitTransition = { fadeOut(tween(200)) }
+    ) {
+        composable(
+            "library",
+            exitTransition = {
+                when (targetState.destination.route) {
+                    "player" -> ExitTransition.None // o player sobe por cima
+                    "settings" -> slideOutHorizontally(tween(320, easing = FastOutSlowInEasing)) { -it / 4 } +
+                        fadeOut(tween(220))
+                    else -> fadeOut(tween(200))
+                }
+            },
+            popEnterTransition = {
+                when (initialState.destination.route) {
+                    "player" -> EnterTransition.None
+                    "settings" -> slideInHorizontally(tween(320, easing = FastOutSlowInEasing)) { -it / 4 } +
+                        fadeIn(tween(260))
+                    else -> fadeIn(tween(300))
+                }
+            }
+        ) {
             LibraryScreen(
                 tracks = tracks,
+                loading = scanning || !cacheLoaded,
+                onTracksLoaded = { mergeLoaded(it) },
                 currentPath = currentIndex?.let { tracks.getOrNull(it)?.path },
                 isPlaying = isPlaying,
                 onTrackClick = { t -> selectTrack(tracks.indexOf(t)) },
                 onAddFolder = { treeLauncher.launch(null) },
-                onSettings = { nav.navigate("settings") },
+                onSettings = { nav.navigate("settings") { launchSingleTop = true } },
                 bottomBar = {
                     val t = currentIndex?.let { tracks.getOrNull(it) }
                     if (t != null) {
@@ -283,13 +385,22 @@ fun App(onThemeMode: (Int) -> Unit) {
                             art = artFull,
                             onPlayPause = { togglePlayPause() },
                             onNext = { nextTrack() },
-                            onClick = { nav.navigate("player") }
+                            onClick = { nav.navigate("player") { launchSingleTop = true } },
+                            progress = { if (t.durationMs > 0) position.toFloat() / t.durationMs else 0f }
                         )
                     }
                 }
             )
         }
-        composable("player") {
+        composable(
+            "player",
+            enterTransition = {
+                slideInVertically(tween(400, easing = FastOutSlowInEasing)) { it } + fadeIn(tween(260))
+            },
+            popExitTransition = {
+                slideOutVertically(tween(340, easing = FastOutSlowInEasing)) { it } + fadeOut(tween(260))
+            }
+        ) {
             val idx = currentIndex
             val track = idx?.let { tracks.getOrNull(it) }
             if (track == null) {
@@ -304,13 +415,14 @@ fun App(onThemeMode: (Int) -> Unit) {
                     wideness = wideness,
                     reverbWet = reverbWet,
                     extraInfo = extraInfo,
+                    tags = trackTags,
                     isFavorite = favorites.contains(track.path),
                     shuffle = shuffle,
                     repeatMode = repeatMode,
                     queue = tracks,
                     queueIndex = idx,
                     onSelectQueue = { i -> selectTrack(i) },
-                    onBack = { nav.popBackStack() },
+                    onBack = { goBack() },
                     onPlayPause = { togglePlayPause() },
                     onNext = { nextTrack() },
                     onPrev = { prevTrack() },
@@ -325,7 +437,15 @@ fun App(onThemeMode: (Int) -> Unit) {
                 )
             }
         }
-        composable("settings") {
+        composable(
+            "settings",
+            enterTransition = {
+                slideInHorizontally(tween(340, easing = FastOutSlowInEasing)) { it } + fadeIn(tween(260))
+            },
+            popExitTransition = {
+                slideOutHorizontally(tween(320, easing = FastOutSlowInEasing)) { it } + fadeOut(tween(240))
+            }
+        ) {
             SettingsScreen(
                 themeMode = themeModeLocal,
                 onThemeMode = { m -> themeModeLocal = m; onThemeMode(m) },
@@ -337,7 +457,7 @@ fun App(onThemeMode: (Int) -> Unit) {
                 },
                 onAddFolder = { treeLauncher.launch(null) },
                 onRescan = { rescan() },
-                onBack = { nav.popBackStack() },
+                onBack = { goBack() },
                 autoplay = autoplay,
                 onAutoplay = { v -> autoplay = v; prefs.edit().putBoolean("autoplay", v).apply() },
                 rescanOnOpen = rescanOnOpen,

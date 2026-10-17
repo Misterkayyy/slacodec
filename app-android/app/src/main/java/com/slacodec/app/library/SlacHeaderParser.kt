@@ -31,13 +31,15 @@ object SlacHeaderParser {
             if (readU32(d) == null) break // crc
             when (id) {
                 CHUNK_FMT -> {
-                    val sr = readU32(d)?.toInt() ?: break
-                    val bits = d.read()
-                    val ch = d.read()
-                    d.read(); d.read()
-                    val total = readU64(d) ?: break
+                    // Lê o payload inteiro (24 bytes): antes só 16 eram consumidos e o
+                    // desalinhamento fazia os chunks seguintes (meta, covr) nunca serem achados.
+                    val p = readBytes(d, size) ?: break
+                    if (p.size < 16) break
+                    val sr = le32(p, 0)
+                    val bits = p[4].toInt() and 0xFF
+                    val ch = p[5].toInt() and 0xFF
+                    val total = le64(p, 8)
                     fmt = Info(sr, bits, ch, total)
-                    skipFully(d, size - 24)
                 }
                 CHUNK_META -> {
                     val payload = readBytes(d, size) ?: break
@@ -67,19 +69,25 @@ object SlacHeaderParser {
         while (pos + 4 <= p.size) {
             val kl = le32(p, pos); pos += 4
             if (kl < 0 || pos + kl > p.size) break
-            val k = String(p, pos, kl.toInt()); pos += kl
+            val k = String(p, pos, kl.toInt(), Charsets.UTF_8).trim().uppercase(); pos += kl
             if (pos + 4 > p.size) break
             val vl = le32(p, pos); pos += 4
             if (vl < 0 || pos + vl > p.size) break
-            val v = String(p, pos, vl.toInt()); pos += vl
-            out[k] = v
+            val v = String(p, pos, vl.toInt(), Charsets.UTF_8).trim(); pos += vl
+            if (k.isNotEmpty() && v.isNotEmpty()) out[k] = v
         }
         return out
     }
 
     private fun le32(p: ByteArray, i: Int): Int =
         (p[i].toInt() and 0xFF) or ((p[i+1].toInt() and 0xFF) shl 8) or
-        ((p[i+2].toInt() and 0xFF) shl 16) or ((p[i+3].toInt() and 0xFF) shl 24)
+                ((p[i+2].toInt() and 0xFF) shl 16) or ((p[i+3].toInt() and 0xFF) shl 24)
+
+    private fun le64(p: ByteArray, i: Int): Long {
+        var v = 0L
+        for (k in 0 until 8) v = v or ((p[i + k].toLong() and 0xFF) shl (8 * k))
+        return v
+    }
 
     private fun skipFully(d: InputStream, n: Long) {
         var rem = n

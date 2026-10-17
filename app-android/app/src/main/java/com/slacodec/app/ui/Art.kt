@@ -8,6 +8,10 @@ import android.net.Uri
 import android.util.LruCache
 import com.slacodec.app.library.SlacHeaderParser
 import com.slacodec.app.model.Track
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 
 fun scaleMaxBitmap(b: Bitmap, max: Int): Bitmap {
     val largest = maxOf(b.width, b.height)
@@ -19,6 +23,16 @@ fun scaleMaxBitmap(b: Bitmap, max: Int): Bitmap {
         (b.height * scale).toInt().coerceAtLeast(1),
         true
     )
+}
+
+/** Decodifica já reduzida (inSampleSize): bem mais barato que decodificar a capa inteira. */
+fun decodeThumb(bytes: ByteArray, target: Int = 120): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    var s = 1
+    while (bounds.outWidth / (s * 2) >= target && bounds.outHeight / (s * 2) >= target) s *= 2
+    val opts = BitmapFactory.Options().apply { inSampleSize = s }
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)?.let { scaleMaxBitmap(it, target) }
 }
 
 // Box blur real: funciona em QUALQUER versao do Android (sem RenderScript/Modifier.blur)
@@ -71,9 +85,21 @@ private fun boxBlur(src: IntArray, w: Int, h: Int, r: Int): IntArray {
 }
 
 object ArtLoader {
-    private val cache = LruCache<String, Bitmap>(80)
+    private val cache = LruCache<String, Bitmap>(48)
     fun get(key: String): Bitmap? = cache.get(key)
-    fun clear() = cache.evictAll()
+    fun put(key: String, bmp: Bitmap) { cache.put(key, bmp) }
+
+    // Faixas sem capa: evita reabrir o arquivo toda vez que o item volta à tela
+    private val noArt = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    fun markNoArt(key: String) { noArt.add(key) }
+    fun isNoArt(key: String): Boolean = noArt.contains(key)
+    fun clear() { cache.evictAll(); noArt.clear() }
+
+    // No máximo 2 capas decodificando ao mesmo tempo: evita disputar CPU/disco com a UI.
+    private val gate = Semaphore(2)
+    suspend fun loadGated(context: Context, track: Track): Bitmap? =
+        if (isNoArt(track.path)) null
+        else gate.withPermit { withContext(Dispatchers.IO) { load(context, track) } }
 
     fun load(context: Context, track: Track): Bitmap? {
         cache.get(track.path)?.let { return it }
@@ -83,9 +109,8 @@ object ArtLoader {
                     SlacHeaderParser.parse(it)
                 }?.coverBytes
             }.getOrNull()
-                ?.let { cb -> BitmapFactory.decodeByteArray(cb, 0, cb.size) }
-                ?.let { scaleMaxBitmap(it, 120) }
-            bmp?.let { cache.put(track.path, it) }
+                ?.let { cb -> decodeThumb(cb) }
+            if (bmp != null) cache.put(track.path, bmp) else markNoArt(track.path)
             return bmp
         }
         val bmp = runCatching {
@@ -93,10 +118,9 @@ object ArtLoader {
             r.setDataSource(context, Uri.parse(track.path))
             val bytes = r.embeddedPicture
             r.release()
-            bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
-                ?.let { scaleMaxBitmap(it, 120) }
+            bytes?.let { decodeThumb(it) }
         }.getOrNull()
-        bmp?.let { cache.put(track.path, it) }
+        if (bmp != null) cache.put(track.path, bmp) else markNoArt(track.path)
         return bmp
     }
 }

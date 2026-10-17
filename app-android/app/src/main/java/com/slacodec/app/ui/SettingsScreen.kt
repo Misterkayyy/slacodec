@@ -1,22 +1,23 @@
 package com.slacodec.app.ui
 
+import android.net.Uri
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -25,11 +26,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     themeMode: Int,
@@ -50,175 +50,185 @@ fun SettingsScreen(
     onDefSpatial: (Float, Float) -> Unit,
     onClearCache: () -> Unit
 ) {
+    val cs = MaterialTheme.colorScheme
     Column(
         Modifier
             .fillMaxSize()
             .statusBarsPadding()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 12.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconTap(IconPaths.BACK, MaterialTheme.colorScheme.onBackground, 24.dp) { onBack() }
-            Text("Ajustes", style = MaterialTheme.typography.headlineMedium)
+        Row(
+            Modifier.fillMaxWidth().padding(start = 8.dp, end = 20.dp, top = 8.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconTap(IconPaths.BACK, cs.onBackground, 22.dp, 10.dp) { onBack() }
+            Text("Ajustes", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(start = 4.dp))
         }
 
-        Spacer(Modifier.padding(6.dp))
-
-        Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
-            Column(Modifier.padding(16.dp)) {
-                Text("Aparencia", style = MaterialTheme.typography.titleSmall)
-                Spacer(Modifier.padding(4.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("Sistema" to 0, "Claro" to 1, "Escuro" to 2).forEach { (name, mode) ->
-                        FilterChip(
-                            selected = themeMode == mode,
-                            onClick = { onThemeMode(mode) },
-                            label = { Text(name, fontSize = 12.sp) }
-                        )
+        Column(Modifier.padding(horizontal = 16.dp)) {
+            SectionLabel("Aparência")
+            Group {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Tema", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("Sistema" to 0, "Claro" to 1, "Escuro" to 2).forEach { (name, mode) ->
+                            PillChip(name, themeMode == mode) { onThemeMode(mode) }
+                        }
                     }
                 }
             }
-        }
 
-        Spacer(Modifier.padding(6.dp))
-
-        Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
-            Column(Modifier.padding(16.dp)) {
-                Text("Reproducao", style = MaterialTheme.typography.titleSmall)
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Tocar ao abrir", style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            "Inicia a musica automaticamente ao selecionar",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(checked = autoplay, onCheckedChange = onAutoplay)
-                }
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Atualizar ao abrir", style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            "Re-escaneia a biblioteca toda vez que voltar a tela inicial",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(checked = rescanOnOpen, onCheckedChange = onRescanOnOpen)
-                }
+            SectionLabel("Reprodução")
+            Group {
+                SwitchRow("Tocar ao selecionar", "Inicia a música automaticamente", autoplay, onAutoplay)
+                Divider()
+                SwitchRow("Atualizar ao voltar", "Reescaneia a biblioteca ao retornar à tela inicial", rescanOnOpen, onRescanOnOpen)
             }
-        }
 
-        Spacer(Modifier.padding(6.dp))
-
-        Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
-            Column(Modifier.padding(16.dp)) {
-                Text("Spatial (SLAC)", style = MaterialTheme.typography.titleSmall)
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Automacao do arquivo", style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            "Usa os keyframes de automacao gravados no .slac",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(checked = useAuto, onCheckedChange = onUseAuto)
-                }
-                Text("Wideness padrao: ${"%.2f".format(defWideness)}", fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Slider(
-                    value = defWideness,
-                    onValueChange = { onDefSpatial(it, defWet) },
-                    valueRange = 0f..2f
-                )
-                Text("Reverb Wet padrao: ${"%.2f".format(defWet)}", fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Slider(
-                    value = defWet,
-                    onValueChange = { onDefSpatial(defWideness, it) },
-                    valueRange = 0f..1f
-                )
+            SectionLabel("Áudio espacial (SLAC)")
+            Group {
+                SwitchRow("Automação do arquivo", "Usa os keyframes de automação gravados no .slac", useAuto, onUseAuto)
+                Divider()
+                SliderRow("Largura padrão", "%.2f".format(defWideness), defWideness, 0f..2f) { onDefSpatial(it, defWet) }
+                Divider()
+                SliderRow("Reverb padrão", "%.2f".format(defWet), defWet, 0f..1f) { onDefSpatial(defWideness, it) }
             }
-        }
 
-        Spacer(Modifier.padding(6.dp))
-
-        Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
-            Column(Modifier.padding(16.dp)) {
-                Text("Biblioteca", style = MaterialTheme.typography.titleSmall)
-                Spacer(Modifier.padding(4.dp))
+            SectionLabel("Pasta da biblioteca")
+            Group {
                 if (folders.isEmpty()) {
                     Text(
-                        "Nenhuma pasta .slac adicionada.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        "Nenhuma pasta selecionada.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = cs.onSurfaceVariant,
+                        modifier = Modifier.padding(16.dp)
                     )
                 } else {
                     folders.forEach { f ->
                         Row(
-                            Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            Modifier.fillMaxWidth().padding(start = 16.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                f.substringAfterLast('/').ifEmpty { "Raiz" },
-                                style = MaterialTheme.typography.bodyMedium,
+                                Uri.decode(f).substringAfterLast(':').substringAfterLast('/').ifEmpty { "Raiz" },
+                                style = MaterialTheme.typography.bodyLarge,
                                 modifier = Modifier.weight(1f)
                             )
-                            IconTap(
-                                IconPaths.CLOSE,
-                                MaterialTheme.colorScheme.error,
-                                18.dp, 8.dp
-                            ) { onRemoveFolder(f) }
+                            IconTap(IconPaths.CLOSE, cs.error, 18.dp, 10.dp) { onRemoveFolder(f) }
                         }
+                        Divider()
                     }
                 }
-                Spacer(Modifier.padding(4.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onAddFolder) { Text("Adicionar", fontSize = 12.sp) }
-                    Button(onClick = onRescan) { Text("Re-escanear", fontSize = 12.sp) }
-                    Button(onClick = onClearCache) { Text("Limpar cache", fontSize = 12.sp) }
-                }
+                ActionRow(if (folders.isEmpty()) "Escolher pasta" else "Alterar pasta", onAddFolder)
+                Divider()
+                ActionRow("Reescanear pasta", onRescan)
+                Divider()
+                ActionRow("Limpar cache de capas", onClearCache)
             }
-        }
 
-        Spacer(Modifier.padding(6.dp))
-
-        Card(
-            Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.primaryContainer
+            Spacer(Modifier.height(28.dp))
+            Text(
+                "Kinetik Player",
+                style = MaterialTheme.typography.titleSmall,
+                color = cs.onSurface,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
             )
-        ) {
-            Column(Modifier.padding(16.dp)) {
-                Text(
-                    "SLACodec Player",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-                Text(
-                    "Versao 1.1  •  Codec lossless LPC+Rice\n" +
-                    "Container: fmt + meta + covr + spat + auto + seek\n" +
-                    "Spatial engine: HRIR true-stereo + FDN reverb\n" +
-                    "Playback: AAudio low-latency (21x realtime)\n" +
-                    "Compilado com amor, direto do Termux.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
-                )
-            }
+            Text(
+                "Versão 1.0  •  Codec lossless LPC + Rice\n" +
+                        "Container: fmt, meta, covr, spat, auto, seek\n" +
+                        "Engine espacial: HRIR true-stereo + reverb FDN\n" +
+                        "Reprodução: AAudio de baixa latência",
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+            )
+            Spacer(Modifier.height(24.dp).navigationBarsPadding())
         }
-        Spacer(Modifier.padding(10.dp))
     }
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text.uppercase(),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        letterSpacing = 1.2.sp,
+        modifier = Modifier.padding(start = 8.dp, top = 24.dp, bottom = 8.dp)
+    )
+}
+
+@Composable
+private fun Group(content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(MaterialTheme.colorScheme.surface),
+        content = content
+    )
+}
+
+@Composable
+private fun Divider() {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp)
+            .height(1.dp)
+            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+    )
+}
+
+@Composable
+private fun SwitchRow(title: String, subtitle: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable { onChecked(!checked) }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Spacer(Modifier.padding(6.dp))
+        Switch(checked = checked, onCheckedChange = onChecked)
+    }
+}
+
+@Composable
+private fun SliderRow(
+    label: String,
+    valueText: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    onChange: (Float) -> Unit
+) {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            Text(valueText, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+        }
+        Slider(value = value, onValueChange = onChange, valueRange = range)
+    }
+}
+
+@Composable
+private fun ActionRow(label: String, onClick: () -> Unit) {
+    Text(
+        label,
+        style = MaterialTheme.typography.bodyLarge,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+    )
 }

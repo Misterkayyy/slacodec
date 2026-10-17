@@ -4,6 +4,7 @@
 #include "slac/core/crc32.hpp"
 #include "slac/core/frame.hpp"
 #include "slac/core/ms.hpp"
+#include "slac/core/embedded_hrir.hpp"
 
 #include <cstdio>
 #include <cstdint>
@@ -115,7 +116,6 @@ public:
         current_frame_.clear();
         current_frame_size_ = 0;
         
-        // Decodifica o frame e posiciona no sample exato (seek sample-accurate).
         if (!decode_next_frame()) return false;
         
         uint64_t frame_start = frame_index * frame_size;
@@ -139,9 +139,10 @@ public:
     uint8_t channels() const { return fmt_.channelCount; }
     uint8_t bits_per_sample() const { return fmt_.bitsPerSample; }
     uint64_t total_samples() const { return fmt_.totalSamples; }
-    const SpatMetadata& spat() const { return spat_; }
-    const std::vector<core::AutoKeyframe>& auto_keyframes() const { return auto_keyframes_; }
     uint64_t position() const { return global_sample_pos_; }
+    const slac::SpatMetadata& spat() const { return spat_; }
+    const std::vector<slac::core::AutoKeyframe>& auto_keyframes() const { return auto_keyframes_; }
+    const slac::core::EmbeddedHRIR& embedded_hrir() const { return embedded_hrir_; }
 
 private:
     FILE* file_ = nullptr;
@@ -152,14 +153,15 @@ private:
     SlacFormat fmt_;
     SpatMetadata spat_;
     SeekTable seek_;
-    std::vector<core::AutoKeyframe> auto_keyframes_;
+    std::vector<slac::core::AutoKeyframe> auto_keyframes_;
     std::vector<std::vector<int32_t>> current_frame_;
     size_t current_frame_size_ = 0;
+    slac::core::EmbeddedHRIR embedded_hrir_;
+
 
     void read_metadata() {
         if (!file_) throw std::runtime_error("file not open");
-        bool saw_slac = false, saw_fmt = false;
-        bool saw_data = false;
+        bool saw_slac = false, saw_fmt = false, saw_data = false;
         
         while (true) {
             uint8_t header[12];
@@ -168,21 +170,15 @@ private:
             uint32_t payload_sz = readU32LE(header + 4);
             uint32_t stored_crc = readU32LE(header + 8);
             
-            // CASO ESPECIAL: chunk data — não ler o payload (pode ser 35MB+).
-            // Não validar CRC do chunk (cobriria 35MB; a validação por-frame é suficiente).
             if (id == detail::kChunkData) {
-                // Offset atual (logo após o header de 12 bytes) = início do payload.
                 data_offset_ = std::ftell(file_);
                 saw_data = true;
-                
-                // Posicionar o ponteiro no início do payload, pronto para ler frames.
                 if (std::fseek(file_, data_offset_, SEEK_SET) != 0) {
                     throw std::runtime_error("fseek to data chunk failed");
                 }
                 break;
             }
 
-            // Para todos os outros chunks: ler o payload normalmente.
             std::vector<uint8_t> payload(payload_sz);
             if (payload_sz > 0 && std::fread(payload.data(), 1, payload_sz, file_) != payload_sz) {
                 throw std::runtime_error("truncated chunk payload");
@@ -197,6 +193,7 @@ private:
             else if (id == detail::kChunkSpat) { try { parse_spat_chunk(payload.data(), payload_sz); } catch (...) {} }
             else if (id == detail::kChunkAuto) { try { parse_auto_chunk(payload.data(), payload_sz); } catch (...) {} }
             else if (id == detail::kChunkSeek) { parse_seek_chunk(payload.data(), payload_sz); }
+            else if (id == slac::core::kChunkHIRR) { parse_hirr_chunk(payload.data(), payload_sz); }
         }
         
         if (!saw_slac || !saw_fmt) throw std::runtime_error("missing required chunks (SLAC/fmt)");
@@ -206,75 +203,35 @@ private:
     void parse_fmt_chunk(const uint8_t* data, size_t size) {
         if (size < 23) throw std::runtime_error("fmt chunk too small");
         size_t p = 0;
-        
-        // sampleRate: uint32 (4 bytes)
         fmt_.sampleRate = readU32LE(data + p); p += 4;
-        
-        // bitsPerSample: uint8 (1 byte)
         fmt_.bitsPerSample = data[p]; p += 1;
-        
-        // channelCount: uint8 (1 byte)
         fmt_.channelCount = data[p]; p += 1;
-        
-        // mode: uint8 (1 byte)
         fmt_.mode = static_cast<DecorrelationMode>(data[p]); p += 1;
-        
-        // reserved: uint8 (1 byte)
-        p += 1;
-        
-        // totalSamples: uint64 (8 bytes)
+        p += 1; // reserved
         fmt_.totalSamples = readU64LE(data + p); p += 8;
-        
-        // frameSize: uint32 (4 bytes)
         fmt_.frameSize = readU32LE(data + p); p += 4;
-        
-        // preset: uint8 (1 byte)
         fmt_.preset = data[p]; p += 1;
-        
-        // encoderMajor: uint8 (1 byte)
         fmt_.encoderMajor = data[p]; p += 1;
-        
-        // encoderMinor: uint8 (1 byte)
         fmt_.encoderMinor = data[p]; p += 1;
     }
 
     void parse_spat_chunk(const uint8_t* data, size_t size) {
         if (size < 10) return;
         size_t p = 0;
-        
-        // wideness_permille: uint16_t little-endian (2 bytes)
-        spat_.wideness_permille = static_cast<uint16_t>(data[p]) | 
-                                  (static_cast<uint16_t>(data[p + 1]) << 8);
-        p += 2;
-        
-        // reverb_wet_pct: uint8_t (1 byte)
+        spat_.wideness_permille = static_cast<uint16_t>(data[p]) | (static_cast<uint16_t>(data[p + 1]) << 8); p += 2;
         spat_.reverb_wet_pct = data[p++];
-        
-        // preset_id: uint8_t (1 byte)
         spat_.preset_id = data[p++];
-        
-        // flags: uint8_t (1 byte)
         spat_.flags = data[p++];
-        
-        // chain_order: uint8_t (1 byte)
         spat_.chain_order = data[p++];
-        
-        // fallback_category: uint8_t (1 byte)
         spat_.fallback_category = data[p++];
-        
-        // fallback_size: uint8_t (1 byte)
         spat_.fallback_size = data[p++];
-        
-        // fallback_decay: uint8_t (1 byte)
         spat_.fallback_decay = data[p++];
-        
-        // reserved: uint8_t (1 byte)
         spat_.reserved = data[p++];
     }
 
     void parse_auto_chunk(const uint8_t* data, size_t size) {
         auto_keyframes_.clear();
-        if (!core::auto_chunk_parse(data, size, auto_keyframes_)) {
+        if (!slac::core::auto_chunk_parse(data, size, auto_keyframes_)) {
             auto_keyframes_.clear();
         }
     }
@@ -289,6 +246,44 @@ private:
             seek_.byte_offsets[i] = readU32LE(data + p); p += 4;
         }
     }
+
+    void parse_hirr_chunk(const uint8_t* data, size_t size) {
+        if (size < 12) return;
+        size_t p = 0;
+        
+        auto read_u32 = [&]() {
+            uint32_t v = data[p] | (data[p+1] << 8) | (data[p+2] << 16) | (data[p+3] << 24);
+            p += 4; return v;
+        };
+
+        embedded_hrir_.sample_rate = read_u32();
+        embedded_hrir_.channels = data[p++];
+        embedded_hrir_.type = static_cast<slac::dsp::HRIRType>(data[p++]);
+        p += 2; // reserved
+        embedded_hrir_.num_samples = read_u32();
+
+        if (embedded_hrir_.num_samples == 0) return;
+
+        auto read_f32 = [&]() {
+            uint32_t u = data[p] | (data[p+1] << 8) | (data[p+2] << 16) | (data[p+3] << 24);
+            p += 4;
+            float v; std::memcpy(&v, &u, 4);
+            return v;
+        };
+
+        embedded_hrir_.ll.resize(embedded_hrir_.num_samples);
+        embedded_hrir_.rr.resize(embedded_hrir_.num_samples);
+        for (uint32_t i = 0; i < embedded_hrir_.num_samples; ++i) embedded_hrir_.ll[i] = read_f32();
+        for (uint32_t i = 0; i < embedded_hrir_.num_samples; ++i) embedded_hrir_.rr[i] = read_f32();
+
+        if (embedded_hrir_.channels >= 4) {
+            embedded_hrir_.lr.resize(embedded_hrir_.num_samples);
+            embedded_hrir_.rl.resize(embedded_hrir_.num_samples);
+            for (uint32_t i = 0; i < embedded_hrir_.num_samples; ++i) embedded_hrir_.lr[i] = read_f32();
+            for (uint32_t i = 0; i < embedded_hrir_.num_samples; ++i) embedded_hrir_.rl[i] = read_f32();
+        }
+    }
+
 
     bool decode_next_frame() {
         if (!file_) return false;
@@ -312,29 +307,23 @@ private:
         sample_pos_in_frame_ = 0;
 
         if (channels == 2 && result.num_streams == 2) {
-            // Aplica conversão de stereo_mode (M/S, L/S, R/S -> L/R).
             std::vector<int32_t> frame_l, frame_r;
-            stereoDecode(result.streams[0], result.streams[1],
-                         result.stereo_mode, frame_l, frame_r);
+            stereoDecode(result.streams[0], result.streams[1], result.stereo_mode, frame_l, frame_r);
             current_frame_[0] = std::move(frame_l);
             current_frame_[1] = std::move(frame_r);
         } else if (channels == 1 && result.num_streams == 1) {
             current_frame_[0] = std::move(result.streams[0]);
         } else if (result.num_streams == 1 && channels == 2) {
-            // Mono duplicado para estéreo.
             current_frame_[0] = result.streams[0];
             current_frame_[1] = result.streams[0];
         } else {
-            // Fallback: copia streams diretamente.
             for (size_t c = 0; c < channels && c < result.streams.size(); ++c) {
                 current_frame_[c] = result.streams[c];
             }
         }
-
         ++current_frame_index_;
         return true;
     }
-
 };
 
 } // namespace slac::rt

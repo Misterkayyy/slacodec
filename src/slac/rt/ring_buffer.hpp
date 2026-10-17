@@ -82,6 +82,11 @@ public:
         read_pos_.store(0, std::memory_order_relaxed);
     }
 
+        void clear() {
+        read_pos_ = 0;
+        write_pos_ = 0;
+    }
+
 private:
     std::vector<T> buffer_;
     size_t mask_ = 0;

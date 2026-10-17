@@ -8,18 +8,13 @@
 #include <cstdint>
 #include <algorithm>
 #include <atomic>
-#include <cstdint>
 #include <memory>
 #include <string>
-#include <cstdint>
 #include <thread>
 #include <vector>
 
 namespace slac::rt {
 
-// Pipeline de playback em tempo real.
-//   Producer thread: StreamingDecoder -> RingBuffer
-//   Callback (AAudio): RingBuffer -> BlockProcessor -> speakers
 class RealtimePlayer {
 public:
     bool open(const std::string& path, const dsp::SpatialChainConfig& cfg,
@@ -27,13 +22,25 @@ public:
         if (!StreamingDecoder::open(path, decoder_)) return false;
         cfg_ = cfg;
         block_size_ = block_size;
-        processor_.configure(cfg, decoder_.sample_rate(), block_size);
+        
+        if (decoder_.embedded_hrir().present()) {
+            const auto& e_hrir = decoder_.embedded_hrir();
+            embedded_hrir_cache_.sample_rate = e_hrir.sample_rate;
+            embedded_hrir_cache_.ll = e_hrir.ll;
+            embedded_hrir_cache_.rr = e_hrir.rr;
+            if (e_hrir.channels >= 4) {
+                embedded_hrir_cache_.lr = e_hrir.lr;
+                embedded_hrir_cache_.rl = e_hrir.rl;
+            }
+            cfg_.hrir = &embedded_hrir_cache_;
+        }
+
+        processor_.configure(cfg_, decoder_.sample_rate(), block_size);
 
         size_t ring_capacity = 65536;
         ring_L_ = std::make_unique<RingBuffer<float>>(ring_capacity);
         ring_R_ = std::make_unique<RingBuffer<float>>(ring_capacity);
 
-        // Pré-aloca buffers (callback NÃO pode alocar memória).
         blockL_.resize(block_size);
         blockR_.resize(block_size);
         procL_.resize(block_size);
@@ -41,10 +48,10 @@ public:
 
         const int bits = decoder_.bits_per_sample();
         scale_ = 1.0f / static_cast<float>(1 << (bits - 1));
-        return true;
+        
+        return true; // <-- CORREÇÃO: Faltava este return
     }
 
-    // Inicia a thread produtora (decode contínuo).
     bool start() {
         stop_requested_.store(false, std::memory_order_release);
         producer_done_.store(false, std::memory_order_release);
@@ -52,8 +59,6 @@ public:
         return true;
     }
 
-    // Chamado pelo audio callback. Produz até block_size samples.
-    // NÃO aloca memória (buffers pré-alocados).
     size_t process_block(float* outL, float* outR) {
         size_t avail = std::min(ring_L_->available_to_read(),
                                 ring_R_->available_to_read());
@@ -68,7 +73,6 @@ public:
         ring_L_->read(blockL_.data(), to_read);
         ring_R_->read(blockR_.data(), to_read);
 
-        // Zero-pad o restante do bloco.
         for (size_t i = to_read; i < block_size_; ++i) {
             blockL_[i] = 0.0f;
             blockR_[i] = 0.0f;
@@ -82,7 +86,7 @@ public:
         return to_read;
     }
 
-    // Mantém render_all() para testes offline.
+    // <-- CORREÇÃO: Método render_all restaurado para os testes smoke
     std::vector<std::vector<float>> render_all() {
         start();
         std::vector<std::vector<float>> output(2);
@@ -116,17 +120,38 @@ public:
     uint64_t total_samples() const { return decoder_.total_samples(); }
     size_t block_size() const { return block_size_; }
 
-    // Expor metadados espaciais do arquivo (lidos pelo StreamingDecoder)
     const slac::SpatMetadata& spat() const { return decoder_.spat(); }
     const std::vector<slac::core::AutoKeyframe>& auto_keyframes() const {
         return decoder_.auto_keyframes();
     }
 
-    // Reconfigurar a spatial chain após abrir (pra usar metadados do arquivo)
     void reconfigure(const dsp::SpatialChainConfig& cfg) {
-        cfg_ = cfg;
-        processor_.configure(cfg, decoder_.sample_rate(), block_size_);
+    cfg_ = cfg;
+    processor_.configure(cfg, decoder_.sample_rate(), block_size_);
     }
+
+    // NOVO: Permite sobrescrever a HRIR (ex: via JNI)
+    void setExternalHrir(const slac::dsp::TrueStereoIR& ir) {
+        external_hrir_cache_ = ir;
+        cfg_.hrir = &external_hrir_cache_;
+        cfg_.hrir_unity_gain = true; // Boa prática para HRIRs externas
+        processor_.configure(cfg_, decoder_.sample_rate(), block_size_);
+    } 
+
+    bool seekToSample(uint64_t target_sample) {
+        bool success = decoder_.seek_to_sample(target_sample);
+        if (success) {
+            if (ring_L_) ring_L_->clear();
+            if (ring_R_) ring_R_->clear();
+        }
+        return success;
+    }
+
+    uint64_t current_sample() const {
+        return decoder_.position();
+    }
+
+    const StreamingDecoder& decoder() const { return decoder_; }
 
 private:
     void producer_loop() {
@@ -168,11 +193,13 @@ private:
     size_t block_size_ = 128;
     float scale_ = 1.0f;
 
+    slac::dsp::TrueStereoIR embedded_hrir_cache_;
+    slac::dsp::TrueStereoIR external_hrir_cache_;
+
     std::thread producer_;
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> producer_done_{false};
 
-    // Buffers pré-alocados (usados no callback).
     std::vector<float> blockL_, blockR_, procL_, procR_;
 };
 

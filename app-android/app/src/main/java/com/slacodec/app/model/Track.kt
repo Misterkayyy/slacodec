@@ -12,7 +12,13 @@ data class Track(
     val bitsPerSample: Int = 0,
     val channels: Int = 0,
     val artist: String = "",
-    val year: String = ""
+    val year: String = "",
+    val genre: String = "",
+    val trackNumber: String = "",
+    val comment: String = "",
+    val lastModified: Long = 0L,
+    /** false = só nome do arquivo conhecido; as tags ainda serão lidas sob demanda */
+    val tagsLoaded: Boolean = true
 ) {
     val isSlac: Boolean get() = format == "SLAC"
 
