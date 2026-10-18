@@ -9,42 +9,15 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,7 +30,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -66,16 +38,6 @@ import com.slacodec.app.model.formatDuration
 import com.slacodec.app.model.formatSampleRate
 import com.slacodec.app.model.formatSize
 import kotlin.math.abs
-
-private data class SpatialPreset(val name: String, val wideness: Float, val wet: Float)
-
-private val PRESETS = listOf(
-    SpatialPreset("Direto", 1.0f, 0.0f),
-    SpatialPreset("Fones", 1.2f, 0.15f),
-    SpatialPreset("Sala", 1.4f, 0.30f),
-    SpatialPreset("Salão", 1.7f, 0.45f),
-    SpatialPreset("Palco", 2.0f, 0.25f)
-)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -100,19 +62,34 @@ fun PlayerScreen(
     onNext: () -> Unit,
     onPrev: () -> Unit,
     onSeek: (Long) -> Unit,
-    onSpatialChange: (Float, Float) -> Unit,
+    // Novos parâmetros para controle espacial direto
+    isSpatialEnabled: Boolean,
+    onSpatialEnabledChange: (Boolean) -> Unit,
+    useFileAutomation: Boolean,
+    onUseFileAutomationChange: (Boolean) -> Unit,
+    manualWideness: Float,
+    onManualWidenessChange: (Float) -> Unit,
+    manualReverbWet: Float,
+    onManualReverbWetChange: (Float) -> Unit,
+    hasAutomation: Boolean,
     onToggleFavorite: () -> Unit,
     onToggleShuffle: () -> Unit,
     onToggleRepeat: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
     val duration = track.durationMs.coerceAtLeast(1L)
-    var showSpatial by remember { mutableStateOf(false) }
+    
     var showQueue by remember { mutableStateOf(false) }
     var showInfo by remember { mutableStateOf(false) }
-    val isDark = cs.background.red < 0.5f
-    var seekPosition by remember(positionMs) { mutableStateOf(positionMs.toFloat()) }
+    
+    var seekPosition by remember { mutableStateOf(positionMs.toFloat()) }
     var isDragging by remember { mutableStateOf(false) }
+
+    LaunchedEffect(positionMs, isDragging) {
+        if (!isDragging) seekPosition = positionMs.toFloat()
+    }
+
+    val isDark = cs.background.red < 0.5f
     val coverScale by animateFloatAsState(
         targetValue = if (isPlaying) 1f else 0.88f,
         animationSpec = spring(dampingRatio = 0.7f, stiffness = 220f),
@@ -157,17 +134,11 @@ fun PlayerScreen(
             Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.rotate(-90f)) { IconTap(IconPaths.BACK, cs.onBackground, 22.dp) { onBack() } }
                 Spacer(Modifier.weight(1f))
-                Text(
-                    "TOCANDO AGORA",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = cs.onSurfaceVariant,
-                    letterSpacing = 2.sp
-                )
+                Text("TOCANDO AGORA", style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, letterSpacing = 2.sp)
                 Spacer(Modifier.weight(1f))
                 IconTap(IconPaths.QUEUE, cs.onBackground, 22.dp) { showQueue = true }
             }
 
-            // Capa: ocupa o espaço livre e se ajusta a telas baixas
             Box(Modifier.weight(1f).fillMaxWidth().padding(vertical = 16.dp), contentAlignment = Alignment.Center) {
                 Box(
                     Modifier
@@ -195,159 +166,118 @@ fun PlayerScreen(
 
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        tags["TITLE"] ?: track.title,
-                        style = MaterialTheme.typography.headlineSmall,
-                        color = cs.onBackground,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Text(tags["TITLE"] ?: track.title, style = MaterialTheme.typography.headlineSmall, color = cs.onBackground, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     val sub = listOf(tags["ARTIST"] ?: track.artist, tags["ALBUM"] ?: track.album).filter { it.isNotEmpty() }.joinToString("  •  ")
                     if (sub.isNotEmpty()) {
-                        Text(
-                            sub,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = cs.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Text(sub, style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 IconTap(IconPaths.INFO, cs.onSurfaceVariant, 22.dp) { showInfo = true }
-                IconTap(
-                    if (isFavorite) IconPaths.HEART else IconPaths.HEART_OUTLINE,
-                    if (isFavorite) cs.primary else cs.onBackground,
-                    24.dp
-                ) { onToggleFavorite() }
+                IconTap(if (isFavorite) IconPaths.HEART else IconPaths.HEART_OUTLINE, if (isFavorite) cs.primary else cs.onBackground, 24.dp) { onToggleFavorite() }
             }
 
-            Row(
-                Modifier.fillMaxWidth().padding(top = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 FormatBadge(track.format, false)
-                info?.let {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = cs.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+                info?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }
             }
 
-            SeekBar(
-                value = positionMs.toFloat(),
-                max = duration.toFloat(),
-                onSeek = { onSeek(it.toLong()) },
+            Slider(
+                value = seekPosition,
+                onValueChange = { isDragging = true; seekPosition = it },
+                onValueChangeFinished = { isDragging = false; onSeek(seekPosition.toLong()) },
+                valueRange = 0f..duration.toFloat(),
+                colors = SliderDefaults.colors(thumbColor = cs.primary, activeTrackColor = cs.primary, inactiveTrackColor = cs.onSurface.copy(alpha = 0.15f)),
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
             )
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
-                Text(formatDuration(positionMs), style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+                Text(formatDuration(seekPosition.toLong()), style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
                 Spacer(Modifier.weight(1f))
                 Text(formatDuration(duration), style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
             }
 
-            Row(
-                Modifier.fillMaxWidth().padding(top = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconTap(
-                    IconPaths.SHUFFLE,
-                    if (shuffle) cs.primary else cs.onSurfaceVariant,
-                    22.dp, 10.dp
-                ) { onToggleShuffle() }
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                IconTap(IconPaths.SHUFFLE, if (shuffle) cs.primary else cs.onSurfaceVariant, 22.dp, 10.dp) { onToggleShuffle() }
                 IconTap(IconPaths.PREV, cs.onBackground, 32.dp, 10.dp) { onPrev() }
-                Box(
-                    Modifier
-                        .size(72.dp)
-                        .clip(CircleShape)
-                        .background(cs.primary)
-                        .clickable { onPlayPause() },
-                    contentAlignment = Alignment.Center
-                ) {
+                Box(Modifier.size(72.dp).clip(CircleShape).background(cs.primary).clickable { onPlayPause() }, contentAlignment = Alignment.Center) {
                     PathIcon(if (isPlaying) IconPaths.PAUSE else IconPaths.PLAY, cs.onPrimary, 34.dp)
                 }
                 IconTap(IconPaths.NEXT, cs.onBackground, 32.dp, 10.dp) { onNext() }
-                IconTap(
-                    if (repeatMode == 2) IconPaths.REPEAT_ONE else IconPaths.REPEAT,
-                    if (repeatMode > 0) cs.primary else cs.onSurfaceVariant,
-                    22.dp, 10.dp
-                ) { onToggleRepeat() }
+                IconTap(if (repeatMode == 2) IconPaths.REPEAT_ONE else IconPaths.REPEAT, if (repeatMode > 0) cs.primary else cs.onSurfaceVariant, 22.dp, 10.dp) { onToggleRepeat() }
             }
 
+            // ── NOVO: Card de Controle Espacial Integrado ──
             if (track.isSlac) {
-                Row(
-                    Modifier
-                        .padding(top = 16.dp)
+                Surface(
+                    modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(cs.surface.copy(alpha = 0.85f))
-                        .clickable { showSpatial = true }
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(top = 16.dp)
+                        .clip(RoundedCornerShape(18.dp)),
+                    color = cs.surface.copy(alpha = 0.85f),
+                    tonalElevation = 2.dp
                 ) {
-                    Text(
-                        "Áudio espacial",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = cs.onSurface,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Text(
-                        "Largura ${(wideness * 100).toInt()}%  •  Reverb ${(reverbWet * 100).toInt()}%",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = cs.primary
-                    )
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Áudio Espacial", style = MaterialTheme.typography.titleSmall, color = cs.onSurface, modifier = Modifier.weight(1f))
+                            Switch(
+                                checked = isSpatialEnabled,
+                                onCheckedChange = onSpatialEnabledChange,
+                                colors = SwitchDefaults.colors(checkedThumbColor = cs.primary)
+                            )
+                        }
+                        
+                        if (isSpatialEnabled) {
+                            Spacer(Modifier.height(12.dp))
+                            
+                            // Opção de Automação
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Usar automação do arquivo", style = MaterialTheme.typography.bodyMedium, color = cs.onSurface, modifier = Modifier.weight(1f))
+                                Switch(
+                                    checked = useFileAutomation && hasAutomation,
+                                    enabled = hasAutomation,
+                                    onCheckedChange = onUseFileAutomationChange,
+                                    colors = SwitchDefaults.colors(checkedThumbColor = cs.primary)
+                                )
+                            }
+                            
+                            Spacer(Modifier.height(8.dp))
+                            
+                            // Sliders (Congelados se a automação estiver ativa)
+                            val slidersEnabled = !useFileAutomation
+                            
+                            Text("Largura: ${(manualWideness * 100).toInt()}%", style = MaterialTheme.typography.labelMedium, color = if (slidersEnabled) cs.onSurfaceVariant else cs.onSurfaceVariant.copy(alpha = 0.5f))
+                            Slider(
+                                value = manualWideness,
+                                onValueChange = { if (slidersEnabled) onManualWidenessChange(it) },
+                                enabled = slidersEnabled,
+                                valueRange = 0f..2f,
+                                colors = SliderDefaults.colors(
+                                    thumbColor = if (slidersEnabled) cs.primary else cs.onSurfaceVariant.copy(alpha = 0.5f),
+                                    activeTrackColor = if (slidersEnabled) cs.primary else cs.onSurfaceVariant.copy(alpha = 0.3f)
+                                )
+                            )
+                            
+                            Text("Reverb: ${(manualReverbWet * 100).toInt()}%", style = MaterialTheme.typography.labelMedium, color = if (slidersEnabled) cs.onSurfaceVariant else cs.onSurfaceVariant.copy(alpha = 0.5f))
+                            Slider(
+                                value = manualReverbWet,
+                                onValueChange = { if (slidersEnabled) onManualReverbWetChange(it) },
+                                enabled = slidersEnabled,
+                                valueRange = 0f..1f,
+                                colors = SliderDefaults.colors(
+                                    thumbColor = if (slidersEnabled) cs.primary else cs.onSurfaceVariant.copy(alpha = 0.5f),
+                                    activeTrackColor = if (slidersEnabled) cs.primary else cs.onSurfaceVariant.copy(alpha = 0.3f)
+                                )
+                            )
+                        }
+                    }
                 }
             }
             Spacer(Modifier.height(16.dp))
         }
     }
 
-    if (showSpatial) {
-        ModalBottomSheet(
-            onDismissRequest = { showSpatial = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ) {
-            Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 32.dp)) {
-                Text("Áudio espacial", style = MaterialTheme.typography.titleMedium)
-                StereoField(
-                    wideness, reverbWet,
-                    Modifier.fillMaxWidth().height(150.dp).padding(vertical = 8.dp)
-                )
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(PRESETS) { p ->
-                        PillChip(p.name, abs(wideness - p.wideness) < 0.01f && abs(reverbWet - p.wet) < 0.01f, { onSpatialChange(p.wideness, p.wet) })
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-                Text("Largura  ${(wideness * 100).toInt()}%", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
-                Slider(
-                    value = wideness,
-                    onValueChange = { onSpatialChange(it, reverbWet) },
-                    valueRange = 0f..2f
-                )
-                Text("Reverb  ${(reverbWet * 100).toInt()}%", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
-                Slider(
-                    value = reverbWet,
-                    onValueChange = { onSpatialChange(wideness, it) },
-                    valueRange = 0f..1f
-                )
-            }
-        }
-    }
-
     if (showInfo) {
-        ModalBottomSheet(
-            onDismissRequest = { showInfo = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ) {
-            Column(
-                Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 32.dp)
-            ) {
+        ModalBottomSheet(onDismissRequest = { showInfo = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+            Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 32.dp)) {
                 Text("Informações da faixa", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
                 listOf(
@@ -364,46 +294,20 @@ fun PlayerScreen(
                     "Tamanho" to formatSize(track.sizeBytes)
                 ).filter { it.second.isNotBlank() }.forEach { (k, v) -> InfoRow(k, v) }
                 val known = setOf("TITLE", "ARTIST", "ALBUM", "DATE", "GENRE", "TRACK", "COMMENT")
-                tags.filterKeys { it !in known }.forEach { (k, v) ->
-                    InfoRow(k.lowercase().replaceFirstChar { it.uppercase() }, v)
-                }
+                tags.filterKeys { it !in known }.forEach { (k, v) -> InfoRow(k.lowercase().replaceFirstChar { it.uppercase() }, v) }
             }
         }
     }
 
     if (showQueue) {
-        ModalBottomSheet(
-            onDismissRequest = { showQueue = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ) {
-            Text(
-                "Fila de reprodução",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
-            )
+        ModalBottomSheet(onDismissRequest = { showQueue = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+            Text("Fila de reprodução", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
             LazyColumn(contentPadding = PaddingValues(bottom = 32.dp)) {
                 itemsIndexed(queue, key = { i, t -> "$i-${t.path}" }) { i, t ->
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable { showQueue = false; onSelectQueue(i) }
-                            .padding(horizontal = 24.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                    Row(Modifier.fillMaxWidth().clickable { showQueue = false; onSelectQueue(i) }.padding(horizontal = 24.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text(
-                                t.title,
-                                style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                color = if (i == queueIndex) cs.primary else cs.onSurface
-                            )
-                            Text(
-                                "${t.artist.ifEmpty { t.album }}  •  ${formatDuration(t.durationMs)}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = cs.onSurfaceVariant,
-                                maxLines = 1
-                            )
+                            Text(t.title, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (i == queueIndex) cs.primary else cs.onSurface)
+                            Text("${t.artist.ifEmpty { t.album }}  •  ${formatDuration(t.durationMs)}", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 1)
                         }
                         if (i == queueIndex && isPlaying) EqBars()
                     }
@@ -413,45 +317,10 @@ fun PlayerScreen(
     }
 }
 
-/** Visualização do campo estéreo: alto-falantes se afastam com a largura; anéis crescem com o reverb. */
-@Composable
-private fun StereoField(wideness: Float, wet: Float, modifier: Modifier = Modifier) {
-    val primary = MaterialTheme.colorScheme.primary
-    val muted = MaterialTheme.colorScheme.onSurfaceVariant
-    val w by animateFloatAsState(wideness, label = "w")
-    val r by animateFloatAsState(wet, label = "r")
-    Canvas(modifier) {
-        val c = Offset(size.width / 2f, size.height / 2f)
-        val maxR = size.height / 2f
-        for (i in 1..3) {
-            val radius = (maxR * (0.4f + 0.2f * i * (0.4f + r))).coerceAtMost(maxR * 1.6f)
-            drawCircle(
-                color = primary.copy(alpha = (0.06f + 0.3f * r) / i),
-                radius = radius,
-                center = c,
-                style = Stroke(width = 2.dp.toPx())
-            )
-        }
-        val spread = (0.12f + 0.36f * (w / 2f)) * size.width
-        val left = Offset(c.x - spread, c.y)
-        val right = Offset(c.x + spread, c.y)
-        drawLine(primary.copy(alpha = 0.35f), left, c, strokeWidth = 2.dp.toPx())
-        drawLine(primary.copy(alpha = 0.35f), right, c, strokeWidth = 2.dp.toPx())
-        drawCircle(muted, radius = maxR * 0.16f, center = c)
-        drawCircle(primary, radius = 9.dp.toPx(), center = left)
-        drawCircle(primary, radius = 9.dp.toPx(), center = right)
-    }
-}
-
 @Composable
 private fun InfoRow(label: String, value: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-        Text(
-            label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(104.dp)
-        )
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(104.dp))
         Text(value, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
     }
 }

@@ -44,11 +44,13 @@ inline void embed_hrir_into_slac(std::vector<uint8_t>& slac_data, const std::str
     }
 
     for (uint32_t i = 0; i < hrir.num_samples; ++i) {
-        hrir.ll[i] = chs[0][i];
-        hrir.rr[i] = chs[1][i];
+        hrir.ll[i] = chs[0][i]; // Canal 0 sempre vai para LL (Left-Left)
         if (hrir.channels >= 4) {
-            hrir.lr[i] = chs[2][i];
-            hrir.rl[i] = chs[3][i];
+            hrir.lr[i] = chs[1][i]; // Canal 1 vai para LR (Left-to-Right crossfeed)
+            hrir.rl[i] = chs[2][i]; // Canal 2 vai para RL (Right-to-Left crossfeed)
+            hrir.rr[i] = chs[3][i]; // Canal 3 vai para RR (Right-Right)
+        } else {
+            hrir.rr[i] = chs[1][i]; // Se for estéreo simples, Canal 1 vai para RR
         }
     }
 
@@ -72,11 +74,16 @@ inline void embed_hrir_into_slac(std::vector<uint8_t>& slac_data, const std::str
     payload.push_back(0); // reserved
     push_u32_to(payload, hrir.num_samples);
 
+    // 2. Serialização no payload: A ORDEM DE ESCRITA DEVE SER EXATAMENTE LL, LR, RL, RR
     for (uint32_t i = 0; i < hrir.num_samples; ++i) push_f32_to(payload, hrir.ll[i]);
-    for (uint32_t i = 0; i < hrir.num_samples; ++i) push_f32_to(payload, hrir.rr[i]);
+    
     if (hrir.channels >= 4) {
         for (uint32_t i = 0; i < hrir.num_samples; ++i) push_f32_to(payload, hrir.lr[i]);
         for (uint32_t i = 0; i < hrir.num_samples; ++i) push_f32_to(payload, hrir.rl[i]);
+        for (uint32_t i = 0; i < hrir.num_samples; ++i) push_f32_to(payload, hrir.rr[i]);
+    } else {
+        // Se for 2 canais, pulamos LR e RL (que são 0) e escrevemos apenas o RR
+        for (uint32_t i = 0; i < hrir.num_samples; ++i) push_f32_to(payload, hrir.rr[i]);
     }
 
     // 2. Montar o header (ID + size)

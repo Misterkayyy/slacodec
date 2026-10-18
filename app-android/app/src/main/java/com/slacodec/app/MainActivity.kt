@@ -1,11 +1,9 @@
 package com.slacodec.app
 
-import android.Manifest
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -84,22 +82,29 @@ fun App(onThemeMode: (Int) -> Unit) {
     val nav = rememberNavController()
     val prefs = remember { context.getSharedPreferences("slac_prefs", 0) }
 
-    // Sem permissão de mídia: o acesso vem da pasta escolhida (SAF)
     val hasPermission = true
     var tracks by remember { mutableStateOf<List<Track>>(emptyList()) }
     var cacheLoaded by remember { mutableStateOf(false) }
     var scanning by remember { mutableStateOf(false) }
     var scanJob by remember { mutableStateOf<Job?>(null) }
     var loadJob by remember { mutableStateOf<Job?>(null) }
+    
     var currentIndex by remember { mutableStateOf<Int?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
     var position by remember { mutableStateOf(0L) }
     var artFull by remember { mutableStateOf<Bitmap?>(null) }
     var artBlur by remember { mutableStateOf<Bitmap?>(null) }
+    
+    // ── NOVOS ESTADOS PARA ÁUDIO ESPACIAL ──
+    var isSpatialEnabled by remember { mutableStateOf(prefs.getBoolean("spatial_enabled", true)) }
+    var useFileAutomation by remember { mutableStateOf(prefs.getBoolean("use_auto", true)) }
+    var hasAutomation by remember { mutableStateOf(false) }
+    
     var wideness by remember { mutableStateOf(prefs.getFloat("def_wideness", 1.0f)) }
     var reverbWet by remember { mutableStateOf(prefs.getFloat("def_wet", 0.2f)) }
     var extraInfo by remember { mutableStateOf<String?>(null) }
     var trackTags by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    
     var favorites by remember { mutableStateOf(prefs.getStringSet("favs", emptySet()) ?: emptySet()) }
     var shuffle by remember { mutableStateOf(false) }
     var repeatMode by remember { mutableStateOf(0) }
@@ -107,11 +112,6 @@ fun App(onThemeMode: (Int) -> Unit) {
     var themeModeLocal by remember { mutableStateOf(prefs.getInt("theme_mode", 0)) }
     var autoplay by remember { mutableStateOf(prefs.getBoolean("autoplay", true)) }
     var rescanOnOpen by remember { mutableStateOf(prefs.getBoolean("rescan_on_open", true)) }
-    var useAuto by remember { mutableStateOf(prefs.getBoolean("use_auto", true)) }
-    var defWideness by remember { mutableStateOf(prefs.getFloat("def_wideness", 1.0f)) }
-    var defWet by remember { mutableStateOf(prefs.getFloat("def_wet", 0.2f)) }
-
-    // ── Funcoes locais: ORDEM IMPORTA no Kotlin (sem referencia antecipada) ──
 
     fun rescan() {
         scanJob?.cancel()
@@ -120,20 +120,18 @@ fun App(onThemeMode: (Int) -> Unit) {
             try {
                 val known = tracks
                 val fresh = withContext(Dispatchers.IO) {
-                    // prioridade baixa: o scan não disputa CPU com animações e rolagem
                     val tid = android.os.Process.myTid()
                     val old = android.os.Process.getThreadPriority(tid)
                     android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
                     try { LibraryScanner.scan(context, known) } finally { android.os.Process.setThreadPriority(old) }
                 }
-                // preserva tags lidas enquanto o scan rodava
                 val latest = tracks.associateBy { it.path }
                 val merged = fresh.map { f ->
                     latest[f.path]?.takeIf {
                         it.tagsLoaded && it.sizeBytes == f.sizeBytes && it.lastModified == f.lastModified
                     } ?: f
                 }
-                if (merged != tracks) { // só recompõe a lista se algo mudou
+                if (merged != tracks) {
                     tracks = merged
                     withContext(Dispatchers.IO) { LibraryCache.save(context, merged) }
                 }
@@ -143,15 +141,12 @@ fun App(onThemeMode: (Int) -> Unit) {
         }
     }
 
-    // Recebe tags lidas sob demanda pela Biblioteca (troca só os itens afetados)
     fun mergeLoaded(loaded: List<Track>) {
         if (loaded.isEmpty()) return
         val byPath = loaded.associateBy { it.path }
         tracks = tracks.map { byPath[it.path] ?: it }
     }
 
-    // Voltar seguro: ignora toques repetidos durante a animação e nunca remove a tela inicial
-    // (dois "voltar" seguidos esvaziavam a pilha e deixavam a tela em branco).
     fun goBack() {
         val entry = nav.currentBackStackEntry ?: return
         if (nav.previousBackStackEntry != null && entry.lifecycle.currentState == Lifecycle.State.RESUMED) {
@@ -172,21 +167,33 @@ fun App(onThemeMode: (Int) -> Unit) {
         currentIndex = index
         isPlaying = false
         position = 0L
-        trackTags = emptyMap() // evita mostrar tags da faixa anterior
+        trackTags = emptyMap()
+        
+        // Resetar estados espaciais para os padrões ao trocar de faixa
         wideness = prefs.getFloat("def_wideness", 1.0f)
         reverbWet = prefs.getFloat("def_wet", 0.2f)
-        // Navega na hora; o carregamento pesado acontece depois, fora da thread principal.
+        hasAutomation = track.isSlac // Assume que SLAC pode ter automação (pode ser refinado com parser futuro)
+
         if (nav.currentBackStackEntry?.destination?.route != "player") {
             nav.navigate("player") { launchSingleTop = true }
         }
+        
         loadJob = scope.launch {
             val player = playerManager.loadFileAsync(context, track.path)
             player?.onPlaybackStateChanged = { playing -> isPlaying = playing }
+            
+            // Aplicar configurações espaciais iniciais
             (player as? SlacPlayer)?.let {
-                it.setUseAuto(useAuto)
-                it.setSpatialParams(wideness, reverbWet)
+                it.setUseAuto(useFileAutomation)
+                if (!isSpatialEnabled) {
+                    it.setSpatialParams(1.0f, 0.0f) // Bypass
+                } else if (!useFileAutomation) {
+                    it.setSpatialParams(wideness, reverbWet)
+                }
             }
+            
             if (autoplay) player?.play()
+            
             val pair = withContext(Dispatchers.IO) {
                 if (track.isSlac) {
                     val info = runCatching {
@@ -208,8 +215,7 @@ fun App(onThemeMode: (Int) -> Unit) {
                     }
                     info?.coverBytes?.let { cb ->
                         BitmapFactory.decodeByteArray(cb, 0, cb.size)?.let { b ->
-                            scaleMaxBitmap(b, 512) to
-                                blurBitmap(Bitmap.createScaledBitmap(b, 96, 96, true), 6, 2)
+                            scaleMaxBitmap(b, 512) to blurBitmap(Bitmap.createScaledBitmap(b, 96, 96, true), 6, 2)
                         }
                     }
                 } else {
@@ -223,8 +229,7 @@ fun App(onThemeMode: (Int) -> Unit) {
                         bytes?.let {
                             val bmp = BitmapFactory.decodeByteArray(it, 0, it.size)
                             bmp?.let { b ->
-                                scaleMaxBitmap(b, 512) to
-                                    blurBitmap(Bitmap.createScaledBitmap(b, 96, 96, true), 6, 2)
+                                scaleMaxBitmap(b, 512) to blurBitmap(Bitmap.createScaledBitmap(b, 96, 96, true), 6, 2)
                             }
                         }
                     }.getOrNull()
@@ -276,12 +281,10 @@ fun App(onThemeMode: (Int) -> Unit) {
         if (isPlaying) p.pause() else p.play()
     }
 
-    // ── Launchers ──
     val treeLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
         uri?.let {
-            // pasta única: a nova escolha substitui a anterior
             LibraryScanner.savedTrees(context).forEach { old -> LibraryScanner.removeTree(context, old) }
             LibraryScanner.addTree(context, it)
             folders = LibraryScanner.savedTrees(context).toList()
@@ -289,14 +292,12 @@ fun App(onThemeMode: (Int) -> Unit) {
         }
     }
 
-    // ── Effects (depois das funcoes que eles chamam) ──
     LaunchedEffect(Unit) {
         val cached = withContext(Dispatchers.IO) { LibraryCache.load(context) }
         if (tracks.isEmpty()) tracks = cached
         cacheLoaded = true
     }
 
-    // Salva no cache (com debounce) as tags que foram sendo lidas
     LaunchedEffect(tracks) {
         if (cacheLoaded && tracks.isNotEmpty()) {
             delay(2000)
@@ -311,7 +312,7 @@ fun App(onThemeMode: (Int) -> Unit) {
     LaunchedEffect(backStack?.destination?.route) {
         val route = backStack?.destination?.route
         if (route == "library" && !firstRoute && rescanOnOpen && hasPermission) {
-            delay(500) // espera a animação de transição terminar
+            delay(500)
             rescan()
         }
         firstRoute = false
@@ -333,13 +334,25 @@ fun App(onThemeMode: (Int) -> Unit) {
         }
     }
 
-    LaunchedEffect(wideness, reverbWet) {
-        (playerManager.getCurrentPlayer() as? SlacPlayer)?.setSpatialParams(wideness, reverbWet)
+    // ── NOVO: Efeito unificado para aplicar configurações espaciais ao player ──
+    LaunchedEffect(isSpatialEnabled, useFileAutomation, wideness, reverbWet) {
+        val player = playerManager.getCurrentPlayer() as? SlacPlayer ?: return@LaunchedEffect
+        
+        player.setUseAuto(useFileAutomation)
+        
+        if (!isSpatialEnabled) {
+            // Se desativado, enviamos parâmetros neutros para bypassar a cadeia
+            player.setSpatialParams(1.0f, 0.0f)
+        } else if (!useFileAutomation) {
+            // Se automação está desligada, os parâmetros manuais sobrepõem o header
+            player.setSpatialParams(wideness, reverbWet)
+        }
+        // Se useFileAutomation for true, o player já está configurado para usar o chunk 'auto', 
+        // então não precisamos enviar parâmetros manuais.
     }
 
     DisposableEffect(Unit) { onDispose { playerManager.release() } }
 
-    // ── Navegacao ──
     NavHost(
         navController = nav,
         startDestination = "library",
@@ -352,17 +365,15 @@ fun App(onThemeMode: (Int) -> Unit) {
             "library",
             exitTransition = {
                 when (targetState.destination.route) {
-                    "player" -> ExitTransition.None // o player sobe por cima
-                    "settings" -> slideOutHorizontally(tween(320, easing = FastOutSlowInEasing)) { -it / 4 } +
-                        fadeOut(tween(220))
+                    "player" -> ExitTransition.None
+                    "settings" -> slideOutHorizontally(tween(320, easing = FastOutSlowInEasing)) { -it / 4 } + fadeOut(tween(220))
                     else -> fadeOut(tween(200))
                 }
             },
             popEnterTransition = {
                 when (initialState.destination.route) {
                     "player" -> EnterTransition.None
-                    "settings" -> slideInHorizontally(tween(320, easing = FastOutSlowInEasing)) { -it / 4 } +
-                        fadeIn(tween(260))
+                    "settings" -> slideInHorizontally(tween(320, easing = FastOutSlowInEasing)) { -it / 4 } + fadeIn(tween(260))
                     else -> fadeIn(tween(300))
                 }
             }
@@ -394,12 +405,8 @@ fun App(onThemeMode: (Int) -> Unit) {
         }
         composable(
             "player",
-            enterTransition = {
-                slideInVertically(tween(400, easing = FastOutSlowInEasing)) { it } + fadeIn(tween(260))
-            },
-            popExitTransition = {
-                slideOutVertically(tween(340, easing = FastOutSlowInEasing)) { it } + fadeOut(tween(260))
-            }
+            enterTransition = { slideInVertically(tween(400, easing = FastOutSlowInEasing)) { it } + fadeIn(tween(260)) },
+            popExitTransition = { slideOutVertically(tween(340, easing = FastOutSlowInEasing)) { it } + fadeOut(tween(260)) }
         ) {
             val idx = currentIndex
             val track = idx?.let { tracks.getOrNull(it) }
@@ -412,8 +419,17 @@ fun App(onThemeMode: (Int) -> Unit) {
                     artBlur = artBlur,
                     isPlaying = isPlaying,
                     positionMs = position,
-                    wideness = wideness,
-                    reverbWet = reverbWet,
+                    // ── Novos parâmetros espaciais ──
+                    isSpatialEnabled = isSpatialEnabled,
+                    onSpatialEnabledChange = { isSpatialEnabled = it; prefs.edit().putBoolean("spatial_enabled", it).apply() },
+                    useFileAutomation = useFileAutomation,
+                    onUseFileAutomationChange = { useFileAutomation = it; prefs.edit().putBoolean("use_auto", it).apply() },
+                    manualWideness = wideness,
+                    onManualWidenessChange = { wideness = it; prefs.edit().putFloat("def_wideness", it).apply() },
+                    manualReverbWet = reverbWet,
+                    onManualReverbWetChange = { reverbWet = it; prefs.edit().putFloat("def_wet", it).apply() },
+                    hasAutomation = hasAutomation,
+                    // ── Fim dos novos parâmetros ──
                     extraInfo = extraInfo,
                     tags = trackTags,
                     isFavorite = favorites.contains(track.path),
@@ -430,7 +446,6 @@ fun App(onThemeMode: (Int) -> Unit) {
                         playerManager.getCurrentPlayer()?.seekTo(ms)
                         position = ms
                     },
-                    onSpatialChange = { w, r -> wideness = w; reverbWet = r },
                     onToggleFavorite = { toggleFavorite(track.path) },
                     onToggleShuffle = { shuffle = !shuffle },
                     onToggleRepeat = { repeatMode = (repeatMode + 1) % 3 }
@@ -439,12 +454,8 @@ fun App(onThemeMode: (Int) -> Unit) {
         }
         composable(
             "settings",
-            enterTransition = {
-                slideInHorizontally(tween(340, easing = FastOutSlowInEasing)) { it } + fadeIn(tween(260))
-            },
-            popExitTransition = {
-                slideOutHorizontally(tween(320, easing = FastOutSlowInEasing)) { it } + fadeOut(tween(240))
-            }
+            enterTransition = { slideInHorizontally(tween(340, easing = FastOutSlowInEasing)) { it } + fadeIn(tween(260)) },
+            popExitTransition = { slideOutHorizontally(tween(320, easing = FastOutSlowInEasing)) { it } + fadeOut(tween(240)) }
         ) {
             SettingsScreen(
                 themeMode = themeModeLocal,
@@ -462,16 +473,15 @@ fun App(onThemeMode: (Int) -> Unit) {
                 onAutoplay = { v -> autoplay = v; prefs.edit().putBoolean("autoplay", v).apply() },
                 rescanOnOpen = rescanOnOpen,
                 onRescanOnOpen = { v -> rescanOnOpen = v; prefs.edit().putBoolean("rescan_on_open", v).apply() },
-                useAuto = useAuto,
+                useAuto = useFileAutomation, // Mapeado para o novo nome
                 onUseAuto = { v ->
-                    useAuto = v
+                    useFileAutomation = v
                     prefs.edit().putBoolean("use_auto", v).apply()
-                    (playerManager.getCurrentPlayer() as? SlacPlayer)?.setUseAuto(v)
                 },
-                defWideness = defWideness,
-                defWet = defWet,
+                defWideness = wideness,
+                defWet = reverbWet,
                 onDefSpatial = { w, r ->
-                    defWideness = w; defWet = r
+                    wideness = w; reverbWet = r
                     prefs.edit().putFloat("def_wideness", w).putFloat("def_wet", r).apply()
                 },
                 onClearCache = {

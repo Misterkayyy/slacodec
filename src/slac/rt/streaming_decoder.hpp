@@ -271,16 +271,26 @@ private:
             return v;
         };
 
-        embedded_hrir_.ll.resize(embedded_hrir_.num_samples);
-        embedded_hrir_.rr.resize(embedded_hrir_.num_samples);
-        for (uint32_t i = 0; i < embedded_hrir_.num_samples; ++i) embedded_hrir_.ll[i] = read_f32();
-        for (uint32_t i = 0; i < embedded_hrir_.num_samples; ++i) embedded_hrir_.rr[i] = read_f32();
+            // Garante que os vetores tenham o tamanho correto antes de ler
+    embedded_hrir_.ll.resize(embedded_hrir_.num_samples);
+    embedded_hrir_.rr.resize(embedded_hrir_.num_samples); 
 
+    // 1. Ler LL (sempre presente)
+    for (uint32_t i = 0; i < embedded_hrir_.num_samples; ++i) {
+        embedded_hrir_.ll[i] = read_f32();
+    }
+
+        // 2. Ler os demais canais na ordem exata: LR, RL, RR
         if (embedded_hrir_.channels >= 4) {
             embedded_hrir_.lr.resize(embedded_hrir_.num_samples);
             embedded_hrir_.rl.resize(embedded_hrir_.num_samples);
+            
             for (uint32_t i = 0; i < embedded_hrir_.num_samples; ++i) embedded_hrir_.lr[i] = read_f32();
             for (uint32_t i = 0; i < embedded_hrir_.num_samples; ++i) embedded_hrir_.rl[i] = read_f32();
+            for (uint32_t i = 0; i < embedded_hrir_.num_samples; ++i) embedded_hrir_.rr[i] = read_f32();
+        } else {
+            // Se for 2 canais, o próximo bloco de dados é o RR
+            for (uint32_t i = 0; i < embedded_hrir_.num_samples; ++i) embedded_hrir_.rr[i] = read_f32();
         }
     }
 
