@@ -391,28 +391,35 @@ inline std::vector<core::AutoKeyframe> generate_auto_keyframes(
     uint32_t sample_rate,
     float window_sec = 2.0f,
     float hop_sec = 1.0f,
-    uint16_t wideness_threshold = 15, 
+    uint16_t wideness_threshold = 15,
     uint8_t reverb_threshold = 3
 ) {
     std::vector<core::AutoKeyframe> keyframes;
-    if (channels.empty() || channels[0].empty()) return keyframes;
-    if (channels.size() < 2) return keyframes; // Automacao so para stereo por enquanto
+    if (channels.size() < 2 || channels[0].empty()) return keyframes;
 
     const size_t total_samples = channels[0].size();
     const size_t window_size = static_cast<size_t>(window_sec * sample_rate);
     const size_t hop_size = static_cast<size_t>(hop_sec * sample_rate);
-
     if (window_size == 0 || hop_size == 0) return keyframes;
 
     const std::vector<int32_t>& left = channels[0];
     const std::vector<int32_t>& right = channels[1];
 
-    // EMA state (Exponential Moving Average para suavizar a analise)
-    float ema_wideness = 1000.0f; // Comeca com 1000 (100%)
-    float ema_reverb = 0.0f;
-    float alpha = 0.4f; // 40% da leitura atual, 60% do historico
+    // 1. Calcular energia global de referência para contexto
+    double global_rms_sq = 0.0;
+    for (size_t i = 0; i < total_samples; ++i) {
+        float l = static_cast<float>(left[i]) / (1 << (bits_per_sample - 1));
+        float r = static_cast<float>(right[i]) / (1 << (bits_per_sample - 1));
+        global_rms_sq += (l * l + r * r);
+    }
+    float global_rms = std::sqrt(global_rms_sq / (2.0 * total_samples));
+    if (global_rms < 1e-6f) global_rms = 1e-6f; // Evitar divisão por zero
 
-    // Last emitted keyframe state (para a histerese)
+    // Estado EMA (Exponential Moving Average)
+    float ema_wideness = 100.0f; 
+    float ema_reverb = 0.0f;
+    float alpha = 0.4f; 
+
     int last_emitted_wideness = -1;
     int last_emitted_reverb = -1;
 
@@ -420,36 +427,64 @@ inline std::vector<core::AutoKeyframe> generate_auto_keyframes(
         size_t end = std::min(start + window_size, total_samples);
         if (end <= start) break;
 
+        // Cortar janela atual
         std::vector<int32_t> win_l(left.begin() + start, left.begin() + end);
         std::vector<int32_t> win_r(right.begin() + start, right.begin() + end);
 
+        // Análise local da janela
         AudioFeatures feat = analyze_audio(win_l, win_r, bits_per_sample, sample_rate);
         derive_spatial_params(feat);
 
-        // EMA smoothing
-        ema_wideness = alpha * feat.suggested_wideness_permille + (1.0f - alpha) * ema_wideness;
-        ema_reverb   = alpha * feat.suggested_reverb_wet_pct   + (1.0f - alpha) * ema_reverb;
+        // --- LÓGICA CONTEXTUAL ---
+        float current_wideness = feat.suggested_wideness_permille / 10.0f;
+        float current_reverb = feat.suggested_reverb_wet_pct;
 
-        uint16_t cur_wideness = static_cast<uint16_t>(std::round(ema_wideness));
-        uint8_t  cur_reverb   = static_cast<uint8_t>(std::round(ema_reverb));
+        // Calcular energia local e balanço L/R
+        double local_rms_sq = 0.0, sum_l = 0.0, sum_r = 0.0;
+        for (size_t i = 0; i < win_l.size(); ++i) {
+            float l = std::abs(static_cast<float>(win_l[i]) / (1 << (bits_per_sample - 1)));
+            float r = std::abs(static_cast<float>(win_r[i]) / (1 << (bits_per_sample - 1)));
+            local_rms_sq += (l * l + r * r);
+            sum_l += l; sum_r += r;
+        }
+        float local_rms = std::sqrt(local_rms_sq / (2.0 * win_l.size()));
+        float energy_ratio = local_rms / global_rms; // < 1.0 = mais quieto que a média
+        float pan_factor = std::abs(sum_l - sum_r) / (sum_l + sum_r + 1e-6f); // 0.0 = centro, 1.0 = hard pan
 
-        // Hysteresis: only emit if changed significantly
+        // Regra 1: Partes calmas ganham mais reverb (atmosfera)
+        if (energy_ratio < 0.4f) {
+            current_reverb = std::min(100.0f, current_reverb + 15.0f);
+        }
+
+        // Regra 2: Panning forte neutraliza o wideness para evitar fase
+        if (pan_factor > 0.6f) {
+            current_wideness = 100.0f; 
+        }
+
+        // Aplicar EMA para suavizar transições
+        ema_wideness = alpha * current_wideness + (1.0f - alpha) * ema_wideness;
+        ema_reverb   = alpha * current_reverb   + (1.0f - alpha) * ema_reverb;
+
+        uint16_t cur_w = static_cast<uint16_t>(std::round(ema_wideness * 10.0f)); // volta para permille
+        uint8_t  cur_r = static_cast<uint8_t>(std::round(ema_reverb));
+
+        // Histerese: só emite se a mudança for significativa
         bool emit = false;
         if (keyframes.empty()) {
             emit = true;
         } else {
-            int diff_w = std::abs(static_cast<int>(cur_wideness) - last_emitted_wideness);
-            int diff_r = std::abs(static_cast<int>(cur_reverb) - last_emitted_reverb);
+            int diff_w = std::abs(static_cast<int>(cur_w) - last_emitted_wideness);
+            int diff_r = std::abs(static_cast<int>(cur_r) - last_emitted_reverb);
             if (diff_w >= wideness_threshold || diff_r >= reverb_threshold) {
                 emit = true;
             }
         }
 
         if (emit) {
-            keyframes.push_back({static_cast<uint32_t>(start), 0, static_cast<float>(cur_wideness)});
-            keyframes.push_back({static_cast<uint32_t>(start), 1, static_cast<float>(cur_reverb)});
-            last_emitted_wideness = cur_wideness;
-            last_emitted_reverb = cur_reverb;
+            keyframes.push_back({static_cast<uint32_t>(start), 0, static_cast<float>(cur_w)});
+            keyframes.push_back({static_cast<uint32_t>(start), 1, static_cast<float>(cur_r)});
+            last_emitted_wideness = cur_w;
+            last_emitted_reverb = cur_r;
         }
     }
 
