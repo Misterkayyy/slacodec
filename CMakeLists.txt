@@ -152,11 +152,12 @@ elseif(WIN32)
         WIN32_LEAN_AND_MEAN   # Headers mais leves
         _WIN32_WINNT=0x0601   # Windows 7+ (WASAPI)
     )
-else()
-    # Linux/Outros: ALSA + pthread
-    target_link_libraries(slacodec-cli PRIVATE
-        pthread
-    )
+elseif(UNIX AND NOT APPLE)
+    # Linux: linkar ALSA e pthreads
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(ALSA REQUIRED alsa)
+    target_include_directories(slacodec-cli PRIVATE ${ALSA_INCLUDE_DIRS})
+    target_link_libraries(slacodec-cli PRIVATE ${ALSA_LIBRARIES} pthread)
 endif()
 
 option(SLAC_ENABLE_SANITIZERS "Enable ASan and UBSan" OFF)

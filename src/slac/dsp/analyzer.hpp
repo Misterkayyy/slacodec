@@ -248,26 +248,22 @@ enum class HRIRType : uint8_t {
 };
 
 inline HRIRType recommend_hrir(const AudioFeatures& feat) {
-    // 1. Percussivo/Frenético: Fluxo espectral alto e energia significativa
-    if (feat.spectral_flux > 2000.0f && feat.rms_energy > 0.05f) {
-        return HRIRType::TrueStereo;
-    }
-
-    // 2. Espacial: Centróide espectral alto e fluxo moderado
-    if (feat.spectral_centroid > 2000.0f && feat.spectral_flux > 1000.0f) {
+    // Stereo 3D: para conteúdo centralizado (correlação alta)
+    // Spatial IR: para conteúdo muito estéreo (correlação baixa, muito Side)
+    
+    if (feat.stereo_correlation < 0.5f && feat.stereo_width > 0.3f) {
         return HRIRType::SpatialIR;
     }
     
-    // 3. Padrão: Equilibrado/Médio
-    return HRIRType::SurroundCrossfeed;
+    // Padrão: Stereo 3D (para maioria das músicas)
+    return HRIRType::TrueStereo;
 }
 
 inline std::string get_hrir_path(HRIRType type, const std::string& ir_dir = "./ir") {
     switch (type) {
         case HRIRType::TrueStereo: return ir_dir + "/true_stereo.wav";
-        case HRIRType::SurroundCrossfeed: return ir_dir + "/surround_crossfeed.wav";
-        case HRIRType::SpatialIR: return ir_dir + "/spatial_ir.wav";
-        default: return "";
+        case HRIRType::SpatialIR: return ir_dir + "/spatial.wav";
+        default: return ir_dir + "/true_stereo.wav";
     }
 }
 

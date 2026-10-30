@@ -17,23 +17,14 @@ namespace slac::rt {
 
 class RealtimePlayer {
 public:
-    bool open(const std::string& path, const dsp::SpatialChainConfig& cfg,
+        bool open(const std::string& path, const dsp::SpatialChainConfig& cfg,
               size_t block_size = 128) {
         if (!StreamingDecoder::open(path, decoder_)) return false;
         cfg_ = cfg;
         block_size_ = block_size;
         
-        if (decoder_.embedded_hrir().present()) {
-            const auto& e_hrir = decoder_.embedded_hrir();
-            embedded_hrir_cache_.sample_rate = e_hrir.sample_rate;
-            embedded_hrir_cache_.ll = e_hrir.ll;
-            embedded_hrir_cache_.rr = e_hrir.rr;
-            if (e_hrir.channels >= 4) {
-                embedded_hrir_cache_.lr = e_hrir.lr;
-                embedded_hrir_cache_.rl = e_hrir.rl;
-            }
-            cfg_.hrir = &embedded_hrir_cache_;
-        }
+        // REMOVIDO: Carregamento automático da HRIR embutida
+        // A HRIR só será aplicada se o usuário chamar reconfigure() com cfg.hrir definido
 
         processor_.configure(cfg_, decoder_.sample_rate(), block_size);
 
@@ -49,7 +40,7 @@ public:
         const int bits = decoder_.bits_per_sample();
         scale_ = 1.0f / static_cast<float>(1 << (bits - 1));
         
-        return true; // <-- CORREÇÃO: Faltava este return
+        return true;
     }
 
     bool start() {
