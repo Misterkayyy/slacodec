@@ -412,7 +412,7 @@ static int cmd_play(int argc, char** argv) {
     std::cout << "Playing: " << input_path << "\n  " << player.sample_rate() << " Hz / "
               << static_cast<int>(player.channels()) << " ch / " << player.total_samples() << " samples\n";
 
-    if (spatial && player.channels() == 2) {
+        if (spatial && player.channels() == 2) {
         slac::dsp::SpatialChainConfig cfg_spatial;
         const auto& spat = player.spat();
         const auto& auto_kfs = player.auto_keyframes();
@@ -421,7 +421,8 @@ static int cmd_play(int argc, char** argv) {
         cfg_spatial.wideness = spat.wideness_permille / 1000.0f;
         cfg_spatial.mono_safe = (spat.flags & 0x02u) != 0u;
         cfg_spatial.hrir_echo_trim = static_cast<float>(get_opt_int(argc, argv, "--hrir-echo-trim", 100)) / 100.0f;
-        cfg_spatial.use_partitioned_conv = partitioned_conv; cfg_spatial.conv_block_size = 128;
+        cfg_spatial.use_partitioned_conv = partitioned_conv; 
+        cfg_spatial.conv_block_size = 128;
         cfg_spatial.makeup_gain_db = static_cast<float>(get_opt_int(argc, argv, "--makeup-db", 6));
 
         std::string lm = get_opt(argc, argv, "--limit-mode", "normalize");
@@ -431,35 +432,63 @@ static int cmd_play(int argc, char** argv) {
         else cfg_spatial.limit_mode = LM::Normalize;
         cfg_spatial.ceiling = 0.988f;
 
-        // NOVO: Só sobrescreve a hrir se o usuário explicitamente passou --hrir
-        // Caso contrário, mantém a que foi carregada automaticamente do container no player.open()
+        // Variável local para manter a HRIR viva durante o playback
+        slac::dsp::TrueStereoIR active_hrir;
+        bool has_hrir = false;
+
+        // 1. Prioridade: HRIR externa via --hrir
         if (!hrir_path.empty()) {
-            slac::dsp::TrueStereoIR* hrir_override = new slac::dsp::TrueStereoIR(); // Nota: em produção, use unique_ptr ou variável local com escopo adequado
             try {
                 slac::dsp::WavData hw = slac::dsp::load_wav(hrir_path);
-                auto chs = hw.channels(); hrir_override->sample_rate = hw.sample_rate;
-                if (chs.size() >= 4) { hrir_override->ll = chs[0]; hrir_override->lr = chs[1]; hrir_override->rl = chs[2]; hrir_override->rr = chs[3]; }
-                else if (chs.size() == 2) { hrir_override->ll = chs[0]; hrir_override->rr = chs[1]; hrir_override->lr.assign(chs[0].size(), 0.0f); hrir_override->rl.assign(chs[1].size(), 0.0f); }
-                cfg_spatial.hrir = hrir_override; 
+                auto chs = hw.channels(); 
+                active_hrir.sample_rate = hw.sample_rate;
+                if (chs.size() >= 4) { 
+                    active_hrir.ll = chs[0]; active_hrir.lr = chs[1]; 
+                    active_hrir.rl = chs[2]; active_hrir.rr = chs[3]; 
+                } else if (chs.size() == 2) { 
+                    active_hrir.ll = chs[0]; active_hrir.rr = chs[1];
+                    active_hrir.lr.assign(chs[0].size(), 0.0f);
+                    active_hrir.rl.assign(chs[1].size(), 0.0f);
+                }
+                cfg_spatial.hrir = &active_hrir; 
                 cfg_spatial.hrir_unity_gain = true;
-            } catch (const std::exception& e) { std::cerr << "Error loading HRIR: " << e.what() << "\n"; return 1; }
+                has_hrir = true;
+                std::cout << "  [INFO] Using external HRIR: " << hrir_path << "\n";
+            } catch (const std::exception& e) { 
+                std::cerr << "Error loading external HRIR: " << e.what() << "\n"; 
+            }
+        } 
+        // 2. Fallback: HRIR embutida no arquivo .slac
+        else if (player.decoder().embedded_hrir().present()) {
+            const auto& emb = player.decoder().embedded_hrir();
+            active_hrir.sample_rate = emb.sample_rate;
+            active_hrir.ll = emb.ll;
+            active_hrir.rr = emb.rr;
+            if (emb.channels >= 4) {
+                active_hrir.lr = emb.lr;
+                active_hrir.rl = emb.rl;
+            }
+            cfg_spatial.hrir = &active_hrir;
+            cfg_spatial.hrir_unity_gain = true;
+            has_hrir = true;
+            std::cout << "  [INFO] Using embedded HRIR (Type: " << static_cast<int>(emb.type) << ")\n";
+        }
+
+        // Aplicar reverb se o arquivo tiver preset
+        if (spat.preset_id > 0 && spat.reverb_wet_pct > 0) {
+            cfg_spatial.reverb_enabled = true; 
+            cfg_spatial.reverb_adaptive = true;
+            cfg_spatial.reverb = slac::dsp::reverb_params_from_descriptors(
+                spat.fallback_category, spat.fallback_size, spat.fallback_decay, 
+                static_cast<float>(spat.reverb_wet_pct));
         }
         
-        if (spat.preset_id > 0 && spat.reverb_wet_pct > 0) {
-            cfg_spatial.reverb_enabled = true; cfg_spatial.reverb_adaptive = true;
-            cfg_spatial.reverb = slac::dsp::reverb_params_from_descriptors(spat.fallback_category, spat.fallback_size, spat.fallback_decay, static_cast<float>(spat.reverb_wet_pct));
-            slac::dsp::TrueStereoIR rir;
-            if (!ir_path.empty()) {
-                try {
-                    slac::dsp::WavData rw = slac::dsp::load_wav(ir_path);
-                    auto chs = rw.channels(); rir.sample_rate = rw.sample_rate;
-                    if (chs.size() >= 4) { rir.ll = chs[0]; rir.lr = chs[1]; rir.rl = chs[2]; rir.rr = chs[3]; }
-                    else if (chs.size() == 2) { rir.ll = chs[0]; rir.rr = chs[1]; rir.lr.assign(chs[0].size(), 0.0f); rir.rl.assign(chs[1].size(), 0.0f); }
-                    cfg_spatial.reverb_ir = &rir;
-                } catch (...) {}
-            }
-        }
+        // Aplicar a configuração ao player
         player.reconfigure(cfg_spatial);
+        std::cout << "  [SPATIAL] Enabled | Wideness: " << (cfg_spatial.wideness * 100) 
+                  << "% | Reverb: " << (spat.reverb_wet_pct) << "% | Makeup: " << cfg_spatial.makeup_gain_db << " dB\n";
+    } else {
+        std::cout << "  [PURE] Playing (no spatial processing)\n";
     }
 
     slac::rt::AudioEngine engine;
