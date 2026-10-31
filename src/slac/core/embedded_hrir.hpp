@@ -1,5 +1,16 @@
 #pragma once
 
+// ==============================================================================
+// THIRD-PARTY DATA: SADIE II Database (University of York)
+// Copyright 2018, University of York. Licensed under Apache License, Version 2.0.
+//
+// This file handles the loading and embedding of modified Impulse Responses (IRs) 
+// derived from the SADIE II database. For full details and attribution, please 
+// refer to the NOTICE and README.md files in the root of this repository.
+// Original dataset DOI: 10.3390/app8112029
+// ==============================================================================
+
+
 #include "slac/core/crc32.hpp"
 #include "slac/dsp/wav_loader.hpp"
 #include "slac/dsp/analyzer.hpp"

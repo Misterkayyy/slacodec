@@ -140,3 +140,14 @@ cmake --build build
 - [ ] SIMD optimization (Runtime dispatch for AVX2 / ARM NEON)
 - [ ] Advanced loudness normalization (LUFS) for consistent volume across tracks
 - [ ] Full native Android App UI integration (MediaSession, Background Service)
+
+## 📜 Credits and Data Attribution
+
+This project utilizes spatial audio Impulse Responses (IRs) derived and modified from the **SADIE II** database, developed by the AudioLab at the University of York.
+
+- **Original Source**: [SADIE II Database](https://www.york.ac.uk/sadie-project/database.html)
+- **Original Data License**: [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0)
+- **Copyright**: © 2018 University of York
+
+If you use this project in academic research, please also cite the original dataset paper:  
+> Armstrong, C., et al. (2018). "A Perceptual Evaluation of Individual and Non-Individual HRTFs: A Case Study of the SADIE II Database." *Applied Sciences*, 8(11), 2029. [DOI: 10.3390/app8112029](https://doi.org/10.3390/app8112029)

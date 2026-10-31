@@ -1,0 +1,20 @@
+=========================================================================
+==  NOTICE file for attribution of third-party data                    ==
+=========================================================================
+
+This project utilizes modified Impulse Responses (IRs) derived from the 
+SADIE II (Spatial Audio Database of Impulse Responses) database.
+
+Copyright 2018, University of York.
+
+The original dataset is licensed under the Apache License, Version 2.0.
+Modifications made within this project are subject to this repository's 
+license, but the copyright of the original data remains with the University of York.
+
+For more information about the original database, visit:
+https://www.york.ac.uk/sadie-project/database.html
+
+Mandatory academic citation for the original dataset:
+Armstrong, C., et al. "A Perceptual Evaluation of Individual and Non-Individual 
+HRTFs: A Case Study of the SADIE II Database." Applied Sciences 8, no. 11 (2018): 2029.
+DOI: https://doi.org/10.3390/app8112029
