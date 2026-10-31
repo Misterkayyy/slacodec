@@ -30,7 +30,7 @@ A production-ready lossless audio codec with **integrated spatial processing**, 
 
 ### Encode
 ```bash
-slacodec-cli encode input.wav output.slac [options]
+slacodec encode input.wav output.slac [options]
 ```
 **Options:**
 - `--preset-encode <name>` : `fast` | `balanced` | `high` | `extreme`
@@ -43,7 +43,7 @@ slacodec-cli encode input.wav output.slac [options]
 
 ### Decode
 ```bash
-slacodec-cli decode input.slac output.wav [options]
+slacodec decode input.slac output.wav [options]
 ```
 **Options:**
 - `--spatial` : Apply the full spatial DSP chain (widening -> HRIR -> reverb)
@@ -52,7 +52,7 @@ slacodec-cli decode input.slac output.wav [options]
 
 ### Real-time Playback
 ```bash
-slacodec-cli play input.slac [options]
+slacodec play input.slac [options]
 ```
 **Options:**
 - `--spatial` : Apply the embedded spatial chain
@@ -62,7 +62,7 @@ slacodec-cli play input.slac [options]
 
 ### Verify Losslessness
 ```bash
-slacodec-cli verify original.wav encoded.slac
+slacodec verify original.wav encoded.slac
 ```
 *Decodes the file in memory and performs a bit-exact comparison against the original, including SHA-256 hash validation.*
 

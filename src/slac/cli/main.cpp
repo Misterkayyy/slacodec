@@ -1,5 +1,5 @@
 // src/slac/cli/main.cpp
-// SLACodec CLI — Spatial Lossless Audio Codec v0.7.0
+// SLACodec CLI — Spatial Lossless Audio Codec v1.1.0
 
 #include <slac/core/container.hpp>
 #include <slac/core/wav_writer.hpp>
@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <map>
 #include <cstring>
+#include <filesystem> // <-- NOVO: Para verificação de existência de arquivos
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -27,7 +28,18 @@
 #include <thread>
 #include <vector>
 
-static constexpr const char* SLAC_VERSION = "0.7.0";
+static constexpr const char* SLAC_VERSION = "1.1.0";
+
+// Helper para verificar existência de arquivo e evitar erros enganosos
+static void ensure_file_exists(const std::string& path, bool is_input = true) {
+    if (!std::filesystem::exists(path)) {
+        std::cerr << "Error: File not found: '" << path << "'\n";
+        if (is_input) {
+            std::cerr << "Please check the file path, spelling, and permissions.\n";
+        }
+        std::exit(1);
+    }
+}
 
 class ProgressBar {
 public:
@@ -181,9 +193,13 @@ static void fill_fallback(slac::SpatMetadata& spat, uint8_t preset_id) {
 }
 
 static int cmd_encode(int argc, char** argv) {
-    if (argc < 4) { std::cerr << "Usage: slacodec-cli encode <input.wav> <output.slac> [options]\n"; return 1; }
+    if (argc < 4) { std::cerr << "Usage: slacodec encode <input> <output.slac> [options]\n"; return 1; }
 
     std::string input_path = argv[2], output_path = argv[3];
+    
+    // NOVO: Verificar existência antes de qualquer processamento
+    ensure_file_exists(input_path, true);
+
     std::string preset_name = get_opt(argc, argv, "--preset-encode", "balanced");
     EncoderPreset preset = get_preset(preset_name);
     bool auto_spatial = has_flag(argc, argv, "--auto-spatial");
@@ -201,11 +217,17 @@ static int cmd_encode(int argc, char** argv) {
         wav = slac::dsp::load_any_audio(input_path, &src_bits);
         if (src_bits > 0) std::cout << "  (converted from " << src_bits << "-bit source via ffmpeg)\n";
     } catch (const std::exception& e) {
-        std::cerr << "Error reading input: " << e.what() << "\n"; return 1;
+        std::string err = e.what();
+        std::cerr << "Error reading input: " << err << "\n";
+        // NOVO: Dica sobre FFmpeg apenas se o erro realmente mencionar isso
+        if (err.find("ffmpeg") != std::string::npos || err.find("FFmpeg") != std::string::npos || err.find("ffprobe") != std::string::npos) {
+            std::cerr << "Hint: Ensure FFmpeg is installed and in your system PATH, or use a standard 16/24-bit WAV file.\n";
+        }
+        return 1;
     }
 
     if (wav.num_channels < 1 || wav.num_channels > 2) {
-        std::cerr << "Error: only mono and stereo supported\n"; return 1;
+        std::cerr << "Error: Only mono and stereo channels are supported (found " << wav.num_channels << ")\n"; return 1;
     }
 
     int effective_bits = wav.bits_per_sample;
@@ -237,7 +259,6 @@ static int cmd_encode(int argc, char** argv) {
         reverb_wet = features.suggested_reverb_wet_pct;
         preset_id = features.suggested_preset_id;
         
-        // Recomendar HRIR
         rec_hrir = slac::dsp::recommend_hrir(features);
         hrir_path = slac::dsp::get_hrir_path(rec_hrir);
         
@@ -286,13 +307,12 @@ static int cmd_encode(int argc, char** argv) {
         }
     }
 
-    // Injeção pós-encode da HRIR (se recomendada)
     if (auto_spatial && wav.num_channels == 2 && !hrir_path.empty()) {
         std::cout << "  Embedding HRIR: " << hrir_path << "...\n";
         slac::core::embed_hrir_into_slac(slac_data, hrir_path, rec_hrir);
     }
 
-    if (!write_file(output_path, slac_data)) { std::cerr << "Error: cannot write output\n"; return 1; }
+    if (!write_file(output_path, slac_data)) { std::cerr << "Error: cannot write output to '" << output_path << "'\n"; return 1; }
 
     uint64_t raw_size = static_cast<uint64_t>(wav.num_frames) * wav.num_channels * (effective_bits / 8);
     double ratio = (slac_data.size() > 0) ? static_cast<double>(raw_size) / static_cast<double>(slac_data.size()) : 0.0;
@@ -309,10 +329,13 @@ static int cmd_encode(int argc, char** argv) {
 }
 
 static int cmd_decode(int argc, char** argv) {
-    if (argc < 4) { std::cerr << "Usage: slacodec-cli decode <input.slac> <output.wav> [options]\n"; return 1; }
+    if (argc < 4) { std::cerr << "Usage: slacodec decode <input.slac> <output.wav> [options]\n"; return 1; }
     using LM = slac::dsp::SpatialChainConfig::LimitMode;
 
     std::string input_path = argv[2], output_path = argv[3];
+    
+    ensure_file_exists(input_path, true);
+
     bool spatial = has_flag(argc, argv, "--spatial");
     bool adaptive_reverb = !has_flag(argc, argv, "--fixed-reverb");
     std::string ir_path = get_opt(argc, argv, "--ir", ""), ir_dir = get_opt(argc, argv, "--ir-dir", "./ir");
@@ -320,15 +343,20 @@ static int cmd_decode(int argc, char** argv) {
     bool no_auto = has_flag(argc, argv, "--no-auto"), partitioned_conv = has_flag(argc, argv, "--partitioned");
 
     std::vector<uint8_t> slac_data;
-    if (!read_file(input_path, slac_data)) { std::cerr << "Error: cannot open input\n"; return 1; }
+    if (!read_file(input_path, slac_data)) { std::cerr << "Error: cannot open input file\n"; return 1; }
 
     slac::SlacFormat fmt; slac::SpatMetadata spat; slac::SeekTable seek; slac::HashInfo hash;
     std::vector<slac::core::AutoKeyframe> auto_kfs; std::vector<std::vector<int32_t>> pcm;
 
     {
         Spinner spin("Decoding");
-        try { pcm = slac::decodeSlacFile(slac_data, &fmt, &spat, &seek, &hash, true, &auto_kfs); }
-        catch (const std::exception& e) { std::cerr << "Decode error: " << e.what() << "\n"; return 1; }
+        try { 
+            pcm = slac::decodeSlacFile(slac_data, &fmt, &spat, &seek, &hash, true, &auto_kfs); 
+        } catch (const std::exception& e) { 
+            std::cerr << "Decode error: Invalid or corrupted SLAC file.\n";
+            std::cerr << "Details: " << e.what() << "\n"; 
+            return 1; 
+        }
     }
 
     if (hash.present && !hash.match) std::cerr << "Warning: SHA-256 mismatch on decoded PCM!\n";
@@ -395,25 +423,31 @@ static int cmd_decode(int argc, char** argv) {
 
 static int cmd_play(int argc, char** argv) {
     if (argc < 3) {
-        std::cerr << "Usage: slacodec-cli play <input.slac> [options]\n";
+        std::cerr << "Usage: slacodec play <input.slac> [options]\n";
         std::cerr << "  --spatial, --hrir <path>, --ir <path>, --partitioned, --makeup-db <N>, --no-auto, --limit-mode <mode>\n";
         return 1;
     }
     using LM = slac::dsp::SpatialChainConfig::LimitMode;
 
     std::string input_path = argv[2];
+    ensure_file_exists(input_path, true);
+
     bool spatial = has_flag(argc, argv, "--spatial"), partitioned_conv = has_flag(argc, argv, "--partitioned");
     bool no_auto = has_flag(argc, argv, "--no-auto");
     std::string hrir_path = get_opt(argc, argv, "--hrir", ""), ir_path = get_opt(argc, argv, "--ir", "");
 
     slac::dsp::SpatialChainConfig cfg;
     slac::rt::RealtimePlayer player;
-    if (!player.open(input_path, cfg, 128)) { std::cerr << "Error: cannot open: " << input_path << "\n"; return 1; }
+    if (!player.open(input_path, cfg, 128)) { 
+        std::cerr << "Error: Cannot open or parse SLAC file: '" << input_path << "'\n";
+        std::cerr << "Hint: The file might be corrupted, truncated, or not a valid .slac file.\n";
+        return 1; 
+    }
 
     std::cout << "Playing: " << input_path << "\n  " << player.sample_rate() << " Hz / "
               << static_cast<int>(player.channels()) << " ch / " << player.total_samples() << " samples\n";
 
-        if (spatial && player.channels() == 2) {
+    if (spatial && player.channels() == 2) {
         slac::dsp::SpatialChainConfig cfg_spatial;
         const auto& spat = player.spat();
         const auto& auto_kfs = player.auto_keyframes();
@@ -433,11 +467,9 @@ static int cmd_play(int argc, char** argv) {
         else cfg_spatial.limit_mode = LM::Normalize;
         cfg_spatial.ceiling = 0.988f;
 
-        // Variável local para manter a HRIR viva durante o playback
         slac::dsp::TrueStereoIR active_hrir;
         bool has_hrir = false;
 
-        // 1. Prioridade: HRIR externa via --hrir
         if (!hrir_path.empty()) {
             try {
                 slac::dsp::WavData hw = slac::dsp::load_wav(hrir_path);
@@ -458,9 +490,7 @@ static int cmd_play(int argc, char** argv) {
             } catch (const std::exception& e) { 
                 std::cerr << "Error loading external HRIR: " << e.what() << "\n"; 
             }
-        } 
-        // 2. Fallback: HRIR embutida no arquivo .slac
-        else if (player.decoder().embedded_hrir().present()) {
+        } else if (player.decoder().embedded_hrir().present()) {
             const auto& emb = player.decoder().embedded_hrir();
             active_hrir.sample_rate = emb.sample_rate;
             active_hrir.ll = emb.ll;
@@ -475,7 +505,6 @@ static int cmd_play(int argc, char** argv) {
             std::cout << "  [INFO] Using embedded HRIR (Type: " << static_cast<int>(emb.type) << ")\n";
         }
 
-        // Aplicar reverb se o arquivo tiver preset
         if (spat.preset_id > 0 && spat.reverb_wet_pct > 0) {
             cfg_spatial.reverb_enabled = true; 
             cfg_spatial.reverb_adaptive = true;
@@ -484,7 +513,6 @@ static int cmd_play(int argc, char** argv) {
                 static_cast<float>(spat.reverb_wet_pct));
         }
         
-        // Aplicar a configuração ao player
         player.reconfigure(cfg_spatial);
         std::cout << "  [SPATIAL] Enabled | Wideness: " << (cfg_spatial.wideness * 100) 
                   << "% | Reverb: " << (spat.reverb_wet_pct) << "% | Makeup: " << cfg_spatial.makeup_gain_db << " dB\n";
@@ -502,6 +530,8 @@ static int cmd_play(int argc, char** argv) {
     std::cout << "  Backend: AAudio (low-latency)\n";
 #elif defined(_WIN32)
     std::cout << "  Backend: WASAPI\n";
+#elif defined(__linux__)
+    std::cout << "  Backend: ALSA\n";
 #endif
     std::cout << "  Press Ctrl+C to stop.\n";
 
@@ -514,22 +544,30 @@ static int cmd_play(int argc, char** argv) {
 }
 
 static int cmd_verify(int argc, char** argv) {
-    if (argc < 4) { std::cerr << "Usage: slacodec-cli verify <original.wav> <coded.slac>\n"; return 1; }
+    if (argc < 4) { std::cerr << "Usage: slacodec verify <original.wav> <coded.slac>\n"; return 1; }
 
     std::string wav_path = argv[2], slac_path = argv[3];
+    
+    ensure_file_exists(wav_path, true);
+    ensure_file_exists(slac_path, true);
+
     slac::dsp::WavData wav;
     try {
         int src_bits = 0;
         wav = slac::dsp::load_any_audio(wav_path, &src_bits);
         if (src_bits > 0) std::cout << "  (converted from " << src_bits << "-bit source via ffmpeg)\n";
-    } catch (const std::exception& e) { std::cerr << "Error reading input: " << e.what() << "\n"; return 1; }
+    } catch (const std::exception& e) { 
+        std::cerr << "Error reading original WAV: " << e.what() << "\n"; return 1; 
+    }
 
     std::vector<uint8_t> slac_data;
-    if (!read_file(slac_path, slac_data)) { std::cerr << "Error reading SLAC\n"; return 1; }
+    if (!read_file(slac_path, slac_data)) { std::cerr << "Error reading SLAC file\n"; return 1; }
 
     std::vector<std::vector<int32_t>> decoded; slac::HashInfo hash; slac::SlacFormat fmt;
     try { decoded = slac::decodeSlacFile(slac_data, &fmt, nullptr, nullptr, &hash); }
-    catch (const std::exception& e) { std::cerr << "Decode error: " << e.what() << "\n"; return 1; }
+    catch (const std::exception& e) { 
+        std::cerr << "Decode error: Invalid or corrupted SLAC file.\nDetails: " << e.what() << "\n"; return 1; 
+    }
 
     if (decoded.size() != static_cast<size_t>(wav.num_channels)) {
         std::cerr << "VERIFY FAIL: channel count mismatch\n"; return 1;
@@ -573,7 +611,7 @@ static int cmd_verify(int argc, char** argv) {
 }
 
 static int cmd_gen(int argc, char** argv) {
-    if (argc < 4) { std::cerr << "Usage: slacodec-cli gen <name> <out.wav>\n"; return 1; }
+    if (argc < 4) { std::cerr << "Usage: slacodec gen <name> <out.wav>\n"; return 1; }
     std::string name = argv[2], out_path = argv[3];
     uint32_t sr = 48000; size_t n = static_cast<size_t>(sr) * 2;
     int ch = (name == "mono") ? 1 : 2;
@@ -636,8 +674,11 @@ static const char* decorrelation_name(slac::DecorrelationMode m) {
 }
 
 static int cmd_info(int argc, char** argv) {
-    if (argc < 3) { std::cerr << "Usage: slacodec-cli info <input.slac>\n"; return 1; }
+    if (argc < 3) { std::cerr << "Usage: slacodec info <input.slac>\n"; return 1; }
     std::string input_path = argv[2];
+    
+    ensure_file_exists(input_path, true);
+
     std::vector<uint8_t> slac_data;
     if (!read_file(input_path, slac_data)) { std::cerr << "Error: cannot open: " << input_path << "\n"; return 1; }
 
@@ -645,7 +686,9 @@ static int cmd_info(int argc, char** argv) {
     std::vector<slac::core::AutoKeyframe> auto_kfs; slac::SlacMetadata meta; slac::SlacCover covr;
 
     try { slac::decodeSlacFile(slac_data, &fmt, &spat, &seek, &hash, true, &auto_kfs, &meta, &covr); }
-    catch (const std::exception& e) { std::cerr << "Error: " << e.what() << "\n"; return 1; }
+    catch (const std::exception& e) { 
+        std::cerr << "Error parsing SLAC file: " << e.what() << "\n"; return 1; 
+    }
 
     auto print_row = [](const std::string& key, const std::string& val) {
         std::cout << "  " << std::left << std::setw(20) << key << " " << val << "\n";
@@ -696,19 +739,19 @@ static int cmd_info(int argc, char** argv) {
 static void print_usage() {
     std::cout << "SLACodec CLI v" << SLAC_VERSION << " - Spatial Lossless Audio Codec\n\n";
     std::cout << "Usage:\n";
-    std::cout << "  slacodec-cli encode <input.wav> <output.slac> [options]\n";
-    std::cout << "  slacodec-cli decode <input.slac> <output.wav> [options]\n";
-    std::cout << "  slacodec-cli play   <input.slac> [options]\n";
-    std::cout << "  slacodec-cli info   <input.slac>\n";
-    std::cout << "  slacodec-cli verify <original.wav> <coded.slac>\n";
-    std::cout << "  slacodec-cli gen    <name> <out.wav>\n\n";
+    std::cout << "  slacodec encode <input> <output.slac> [options]\n";
+    std::cout << "  slacodec decode <input.slac> <output.wav> [options]\n";
+    std::cout << "  slacodec play   <input.slac> [options]\n";
+    std::cout << "  slacodec info   <input.slac>\n";
+    std::cout << "  slacodec verify <original.wav> <coded.slac>\n";
+    std::cout << "  slacodec gen    <name> <out.wav>\n\n";
     std::cout << "Options: --preset-encode, --auto-spatial, --spatial, --hrir, --ir, --limit-mode, etc.\n";
     std::cout << "Gen names: silence | sine | noise | transient | wasted | mono | stereo-wide | stereo-asym\n";
 }
 
 int main(int argc, char** argv) {
     if (argc < 2 || std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h") { print_usage(); return 0; }
-    if (std::string(argv[1]) == "--version" || std::string(argv[1]) == "-v") { std::cout << "slacodec-cli " << SLAC_VERSION << "\n"; return 0; }
+    if (std::string(argv[1]) == "--version" || std::string(argv[1]) == "-v") { std::cout << "slacodec " << SLAC_VERSION << "\n"; return 0; }
 
     try {
         std::string cmd = argv[1];

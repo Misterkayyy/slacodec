@@ -404,21 +404,22 @@ inline std::vector<core::AutoKeyframe> generate_auto_keyframes(
 
     const std::vector<int32_t>& left = channels[0];
     const std::vector<int32_t>& right = channels[1];
+    const float scale = 1.0f / static_cast<float>(1 << (bits_per_sample - 1));
 
-    // 1. Calcular energia global de referência para contexto
+    // 1. Energia global de referência (para contexto de "silêncio" vs "barulho")
     double global_rms_sq = 0.0;
     for (size_t i = 0; i < total_samples; ++i) {
-        float l = static_cast<float>(left[i]) / (1 << (bits_per_sample - 1));
-        float r = static_cast<float>(right[i]) / (1 << (bits_per_sample - 1));
+        float l = static_cast<float>(left[i]) * scale;
+        float r = static_cast<float>(right[i]) * scale;
         global_rms_sq += (l * l + r * r);
     }
     float global_rms = std::sqrt(global_rms_sq / (2.0 * total_samples));
-    if (global_rms < 1e-6f) global_rms = 1e-6f; // Evitar divisão por zero
+    if (global_rms < 1e-6f) global_rms = 1e-6f;
 
-    // Estado EMA (Exponential Moving Average)
+    // Estado EMA para suavização (evita "pumping" ou artefatos de comutação)
     float ema_wideness = 100.0f; 
     float ema_reverb = 0.0f;
-    float alpha = 0.4f; 
+    float alpha = 0.35f; // Suavização um pouco mais forte para transições musicais
 
     int last_emitted_wideness = -1;
     int last_emitted_reverb = -1;
@@ -427,48 +428,72 @@ inline std::vector<core::AutoKeyframe> generate_auto_keyframes(
         size_t end = std::min(start + window_size, total_samples);
         if (end <= start) break;
 
-        // Cortar janela atual
-        std::vector<int32_t> win_l(left.begin() + start, left.begin() + end);
-        std::vector<int32_t> win_r(right.begin() + start, right.begin() + end);
+        // --- ANÁLISE ULTRA-RÁPIDA (O(N), sem FFT) ---
+        float sum_sq_l = 0.0f, sum_sq_r = 0.0f;
+        int phase_mismatch_count = 0;
+        
+        // Ponteiros diretos para evitar overhead de std::vector no loop interno
+        const int32_t* ptr_l = left.data() + start;
+        const int32_t* ptr_r = right.data() + start;
+        size_t len = end - start;
 
-        // Análise local da janela
-        AudioFeatures feat = analyze_audio(win_l, win_r, bits_per_sample, sample_rate);
-        derive_spatial_params(feat);
-
-        // --- LÓGICA CONTEXTUAL ---
-        float current_wideness = feat.suggested_wideness_permille / 10.0f;
-        float current_reverb = feat.suggested_reverb_wet_pct;
-
-        // Calcular energia local e balanço L/R
-        double local_rms_sq = 0.0, sum_l = 0.0, sum_r = 0.0;
-        for (size_t i = 0; i < win_l.size(); ++i) {
-            float l = std::abs(static_cast<float>(win_l[i]) / (1 << (bits_per_sample - 1)));
-            float r = std::abs(static_cast<float>(win_r[i]) / (1 << (bits_per_sample - 1)));
-            local_rms_sq += (l * l + r * r);
-            sum_l += l; sum_r += r;
-        }
-        float local_rms = std::sqrt(local_rms_sq / (2.0 * win_l.size()));
-        float energy_ratio = local_rms / global_rms; // < 1.0 = mais quieto que a média
-        float pan_factor = std::abs(sum_l - sum_r) / (sum_l + sum_r + 1e-6f); // 0.0 = centro, 1.0 = hard pan
-
-        // Regra 1: Partes calmas ganham mais reverb (atmosfera)
-        if (energy_ratio < 0.4f) {
-            current_reverb = std::min(100.0f, current_reverb + 15.0f);
+        for (size_t i = 0; i < len; ++i) {
+            float l = static_cast<float>(ptr_l[i]) * scale;
+            float r = static_cast<float>(ptr_r[i]) * scale;
+            
+            sum_sq_l += l * l;
+            sum_sq_r += r * r;
+            
+            // Detecção de fase: sinais opostos indicam conteúdo out-of-phase
+            if ((l > 0.0f && r < 0.0f) || (l < 0.0f && r > 0.0f)) {
+                phase_mismatch_count++;
+            }
         }
 
-        // Regra 2: Panning forte neutraliza o wideness para evitar fase
-        if (pan_factor > 0.6f) {
-            current_wideness = 100.0f; 
+        float local_rms = std::sqrt((sum_sq_l + sum_sq_r) / (2.0f * len));
+        float energy_ratio = local_rms / global_rms;
+        
+        // Pan: -1.0 (Hard Left) a +1.0 (Hard Right)
+        float pan = (sum_sq_l - sum_sq_r) / (sum_sq_l + sum_sq_r + 1e-6f);
+        float phase_ratio = static_cast<float>(phase_mismatch_count) / static_cast<float>(len);
+
+        // --- LÓGICA CONTEXTUAL (REGRAS DE OURO) ---
+        float target_wideness = 100.0f;
+        float target_reverb = 15.0f; // Base mínima
+
+        // Regra 1: Proteção de Fase
+        // Se >35% das amostras têm sinais opostos, é conteúdo out-of-phase (ex: bateria wide, synth).
+        // Wideness artificial aqui causa cancelamento. Forçamos 100% (neutro).
+        if (phase_ratio > 0.35f) {
+            target_wideness = 100.0f;
+        } else {
+            // Comportamento normal: se o áudio já é wide, não widenemos tanto.
+            float base_width = 140.0f - (std::abs(pan) * 40.0f); 
+            target_wideness = std::max(100.0f, std::min(150.0f, base_width));
         }
 
-        // Aplicar EMA para suavizar transições
-        ema_wideness = alpha * current_wideness + (1.0f - alpha) * ema_wideness;
-        ema_reverb   = alpha * current_reverb   + (1.0f - alpha) * ema_reverb;
+        // Regra 2: Reverb Adaptativo "Fill-the-Void" (Preencher o Vazio)
+        // Se o som está fortemente panoramizado (abs(pan) > 0.6), aumentamos o reverb.
+        // O reverb, sendo difuso, vai "vazar" para o canal oposto, preenchendo o espaço 
+        // sem embolar o som direto que está em um lado só.
+        float abs_pan = std::abs(pan);
+        if (abs_pan > 0.6f) {
+            target_reverb += (abs_pan - 0.6f) * 40.0f; // Boost de até ~16% no wet
+        }
 
-        uint16_t cur_w = static_cast<uint16_t>(std::round(ema_wideness * 10.0f)); // volta para permille
+        // Regra 3: Partes calmas ganham mais atmosfera
+        if (energy_ratio < 0.3f) {
+            target_reverb += 10.0f;
+        }
+
+        // Aplicar EMA para suavizar a transição entre janelas
+        ema_wideness = alpha * target_wideness + (1.0f - alpha) * ema_wideness;
+        ema_reverb   = alpha * target_reverb   + (1.0f - alpha) * ema_reverb;
+
+        uint16_t cur_w = static_cast<uint16_t>(std::round(ema_wideness * 10.0f)); // permille
         uint8_t  cur_r = static_cast<uint8_t>(std::round(ema_reverb));
 
-        // Histerese: só emite se a mudança for significativa
+        // Histerese: só emite keyframe se a mudança for significativa (economiza espaço no arquivo)
         bool emit = false;
         if (keyframes.empty()) {
             emit = true;
