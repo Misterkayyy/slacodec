@@ -341,8 +341,98 @@ static int cmd_encode(int argc, char** argv) {
     return 0;
 }
 
-// ... [Mantenha cmd_decode, cmd_gen, cmd_verify, cmd_info e print_usage exatamente como estavam na versão anterior] ...
-// (Para economizar espaço, estou mostrando apenas as partes que mudaram, mas você deve colar o arquivo completo que te passei antes, aplicando apenas as mudanças abaixo no cmd_play)
+static int cmd_decode(int argc, char** argv) {
+    if (argc < 4) { std::cerr << "Usage: slacodec decode <input.slac> <output.wav> [options]\n"; return 1; }
+    using LM = slac::dsp::SpatialChainConfig::LimitMode;
+
+    std::string input_path = argv[2], output_path = argv[3];
+    
+    ensure_file_exists(input_path, true);
+
+    bool spatial = has_flag(argc, argv, "--spatial");
+    bool adaptive_reverb = !has_flag(argc, argv, "--fixed-reverb");
+    std::string ir_path = get_opt(argc, argv, "--ir", ""), ir_dir = get_opt(argc, argv, "--ir-dir", "./ir");
+    std::string hrir_path = get_opt(argc, argv, "--hrir", "");
+    bool no_auto = has_flag(argc, argv, "--no-auto"), partitioned_conv = has_flag(argc, argv, "--partitioned");
+
+    std::vector<uint8_t> slac_data;
+    if (!read_file(input_path, slac_data)) { std::cerr << "Error: cannot open input file\n"; return 1; }
+
+    slac::SlacFormat fmt; slac::SpatMetadata spat; slac::SeekTable seek; slac::HashInfo hash;
+    std::vector<slac::core::AutoKeyframe> auto_kfs; std::vector<std::vector<int32_t>> pcm;
+
+    {
+        Spinner spin("Decoding");
+        try { 
+            pcm = slac::decodeSlacFile(slac_data, &fmt, &spat, &seek, &hash, true, &auto_kfs); 
+        } catch (const std::exception& e) { 
+            std::cerr << "Decode error: Invalid or corrupted SLAC file.\n";
+            std::cerr << "Details: " << e.what() << "\n"; 
+            return 1; 
+        }
+    }
+
+    if (hash.present && !hash.match) std::cerr << "Warning: SHA-256 mismatch on decoded PCM!\n";
+
+    if (spatial && fmt.channelCount == 2) {
+        slac::dsp::SpatialChainConfig cfg;
+        cfg.wideness = spat.wideness_permille / 1000.0f;
+        cfg.mono_safe = (spat.flags & 0x02u) != 0u;
+        cfg.hrir_echo_trim = static_cast<float>(get_opt_int(argc, argv, "--hrir-echo-trim", 100)) / 100.0f;
+        cfg.use_partitioned_conv = partitioned_conv; cfg.conv_block_size = 128;
+
+        if (!auto_kfs.empty() && !no_auto) { cfg.auto_keyframes = auto_kfs; cfg.use_auto = true; }
+        if (has_flag(argc, argv, "--no-limit")) cfg.limit_mode = LM::None;
+        else {
+            std::string lm = get_opt(argc, argv, "--limit-mode", "normalize");
+            if (lm == "limit") cfg.limit_mode = LM::Limit;
+            else if (lm == "loudness") cfg.limit_mode = LM::Loudness;
+            else if (lm == "none") cfg.limit_mode = LM::None;
+            else cfg.limit_mode = LM::Normalize;
+        }
+
+        slac::dsp::TrueStereoIR hrir;
+        if (!hrir_path.empty()) {
+            try {
+                slac::dsp::WavData hw = slac::dsp::load_wav(hrir_path);
+                auto chs = hw.channels(); hrir.sample_rate = hw.sample_rate;
+                if (chs.size() >= 4) { hrir.ll = chs[0]; hrir.lr = chs[1]; hrir.rl = chs[2]; hrir.rr = chs[3]; }
+                else if (chs.size() == 2) { hrir.ll = chs[0]; hrir.rr = chs[1]; hrir.lr.assign(chs[0].size(), 0.0f); hrir.rl.assign(chs[1].size(), 0.0f); }
+                else throw std::runtime_error("HRIR needs 2 or 4 channels");
+                cfg.hrir = &hrir;
+            } catch (const std::exception& e) { std::cerr << "Warning: HRIR load failed (" << e.what() << ")\n"; }
+        }
+
+        if (spat.preset_id > 0 && spat.reverb_wet_pct > 0) {
+            cfg.reverb_enabled = true; cfg.reverb_adaptive = adaptive_reverb;
+            cfg.reverb = slac::dsp::reverb_params_from_descriptors(spat.fallback_category, spat.fallback_size, spat.fallback_decay, static_cast<float>(spat.reverb_wet_pct));
+            slac::dsp::TrueStereoIR rir;
+            std::string rpath = ir_path.empty() ? (ir_dir + "/reverb_preset_" + std::to_string(spat.preset_id) + ".wav") : ir_path;
+            try {
+                slac::dsp::WavData rw = slac::dsp::load_wav(rpath);
+                auto chs = rw.channels(); rir.sample_rate = rw.sample_rate;
+                if (chs.size() >= 4) { rir.ll = chs[0]; rir.lr = chs[1]; rir.rl = chs[2]; rir.rr = chs[3]; }
+                else if (chs.size() == 2) { rir.ll = chs[0]; rir.rr = chs[1]; rir.lr.assign(chs[0].size(), 0.0f); rir.rl.assign(chs[1].size(), 0.0f); }
+                cfg.reverb_ir = &rir;
+            } catch (...) {}
+        }
+
+        {
+            Spinner spin("Applying spatial DSP");
+            slac::dsp::apply_spatial_chain(pcm[0], pcm[1], fmt.bitsPerSample, fmt.sampleRate, cfg);
+        }
+    }
+
+    {
+        Spinner spin("Writing WAV");
+        try { slac::write_wav(output_path, pcm, fmt.sampleRate); }
+        catch (const std::exception& e) { std::cerr << "Error writing output: " << e.what() << "\n"; return 1; }
+    }
+
+    std::cout << "\n  Input:       " << input_path << "\n  Output:      " << output_path
+              << "\n  Format:      " << fmt.sampleRate << " Hz / " << static_cast<int>(fmt.bitsPerSample) << "-bit\n";
+    return 0;
+}
 
 static int cmd_play(int argc, char** argv) {
     if (argc < 3) {
@@ -391,7 +481,6 @@ static int cmd_play(int argc, char** argv) {
         cfg_spatial.ceiling = 0.988f;
 
         slac::dsp::TrueStereoIR active_hrir;
-        bool has_hrir = false;
 
         if (!hrir_path.empty()) {
             try {
@@ -408,7 +497,6 @@ static int cmd_play(int argc, char** argv) {
                 }
                 cfg_spatial.hrir = &active_hrir; 
                 cfg_spatial.hrir_unity_gain = true;
-                has_hrir = true;
                 std::cout << "  [INFO] Using external HRIR: " << hrir_path << "\n";
             } catch (const std::exception& e) { 
                 std::cerr << "Error loading external HRIR: " << e.what() << "\n"; 
@@ -424,7 +512,6 @@ static int cmd_play(int argc, char** argv) {
             }
             cfg_spatial.hrir = &active_hrir;
             cfg_spatial.hrir_unity_gain = true;
-            has_hrir = true;
             std::cout << "  [INFO] Using embedded HRIR (Type: " << static_cast<int>(emb.type) << ")\n";
         }
 
@@ -664,7 +751,7 @@ static int cmd_info(int argc, char** argv) {
 static void print_usage() {
     std::cout << "SLACodec CLI v" << SLAC_VERSION << " - Spatial Lossless Audio Codec\n\n";
     std::cout << "Usage:\n";
-    std::cout << "  slacodec encode <input> <output.slac> [options]\n";
+    std::cout << "  slacodec encode <input> [output.slac] [options]\n";
     std::cout << "  slacodec decode <input.slac> <output.wav> [options]\n";
     std::cout << "  slacodec play   <input.slac> [options]\n";
     std::cout << "  slacodec info   <input.slac>\n";

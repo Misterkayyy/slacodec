@@ -84,8 +84,10 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < n; ++i) {
         float l = stream_L[i] * q;
         float r = stream_R[i] * q;
-        if (l > q) l = q; if (l < -q) l = -q;
-        if (r > q) r = q; if (r < -q) r = -q;
+        if (l > q) l = q;
+        if (l < -q) l = -q;
+        if (r > q) r = q; 
+        if (r < -q) r = -q;
         stream_L_int[i] = static_cast<int32_t>(std::lround(l));
         stream_R_int[i] = static_cast<int32_t>(std::lround(r));
     }

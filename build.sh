@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════
 # SLACodec build script
-# Uso: ./install.sh [--clean] [--debug] [--jobs N] [--install]
+# Uso: ./build.sh [--clean] [--debug] [--jobs N] [--install]
 # ═══════════════════════════════════════════════════════════════════════════
 set -e
 
@@ -60,12 +60,12 @@ fi
 
 # Clean se pedido
 if [[ $CLEAN -eq 1 ]]; then
-    echo "🧹 Cleaning build directory..."
+    echo " Cleaning build directory..."
     rm -rf build
 fi
 
 # Configurar
-echo "⚙️  Configuring SLACodec (type=$BUILD_TYPE, jobs=$JOBS)..."
+echo "️  Configuring SLACodec (type=$BUILD_TYPE, jobs=$JOBS)..."
 cmake -S . -B build -G "$GENERATOR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
 
 # Build
@@ -83,7 +83,7 @@ echo ""
 # Install se pedido
 if [[ $DO_INSTALL -eq 1 ]]; then
     if [[ "$EXT" != "" ]]; then
-        echo "️  Global installation not supported on Windows."
+        echo "⚠️  Global installation not supported on Windows."
         echo "   Please add ./build to your PATH manually."
     else
         echo "📦 Installing globally to /usr/local/bin..."
