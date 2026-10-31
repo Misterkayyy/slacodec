@@ -49,12 +49,15 @@ inline std::vector<uint8_t> encode_frame(
     uint16_t frame_samples = static_cast<uint16_t>(frame_streams[0].size());
     uint8_t  num_streams   = static_cast<uint8_t>(frame_streams.size());
 
+    // 🚀 OTIMIZAÇÃO: Pré-alocar stream_data para evitar realocações no loop interno
+    size_t estimated_stream_size = frame_samples * num_streams * 4; 
     std::vector<uint8_t> stream_data;
+    stream_data.reserve(estimated_stream_size);
+
     for (size_t s = 0; s < frame_streams.size(); ++s) {
         int bps = bits_per_sample;
         if (s == 1 && stream1_bits > 0) bps = stream1_bits;
-        auto block = encodeBlockMono(frame_streams[s], bps,
-                                     lpc_order, lpc_shift, use_range_coding);
+        auto block = encodeBlockMono(frame_streams[s], bps, lpc_order, lpc_shift, use_range_coding);
         stream_data.insert(stream_data.end(), block.begin(), block.end());
     }
 

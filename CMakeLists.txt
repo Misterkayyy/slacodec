@@ -73,20 +73,20 @@ add_executable(slac_realtime_player_smoke
 
 
 # ── CLI ───────────────────────────────────────────────────────
-add_executable(slacodec-cli
+add_executable(slacodec
     src/slac/cli/main.cpp
 )
 
 # Configuracoes especificas por plataforma
 if(ANDROID)
     # Android: API 26+ para o CLI (AAudio requer API 26)
-    set_target_properties(slacodec-cli PROPERTIES
+    set_target_properties(slacodec PROPERTIES
         CXX_STANDARD 17
         COMPILE_FLAGS "--target=aarch64-linux-android26"
     )
 elseif(WIN32)
     # Windows: configuracao padrao
-    set_target_properties(slacodec-cli PROPERTIES
+    set_target_properties(slacodec PROPERTIES
         CXX_STANDARD 17
         WIN32_EXECUTABLE FALSE  # Console app
     )
@@ -98,7 +98,7 @@ foreach(target IN ITEMS
     slac_dsp_smoke
     slac_reverb_registry_smoke
     slac_reverb_conv_smoke
-    slacodec-cli
+    slacodec
     slac_ir_diagnostic
     slac_frame_smoke
     slac_fuzz_smoke
@@ -135,19 +135,19 @@ endforeach()
 # Linkagem específica por plataforma
 if(ANDROID)
     # Android: AAudio + pthread
-    target_link_libraries(slacodec-cli PRIVATE
+    target_link_libraries(slacodec PRIVATE
         /system/lib64/libaaudio.so
         pthread
     )
 elseif(WIN32)
     # Windows: WASAPI (audio nativo) + COM
-    target_link_libraries(slacodec-cli PRIVATE
+    target_link_libraries(slacodec PRIVATE
         ole32      # COM (Component Object Model)
         oleaut32   # OLE Automation
         uuid       # UUIDs (usados por COM)
         winmm      # Windows Multimedia (backup)
     )
-    target_compile_definitions(slacodec-cli PRIVATE
+    target_compile_definitions(slacodec PRIVATE
         NOMINMAX              # Evita conflito com std::min/max
         WIN32_LEAN_AND_MEAN   # Headers mais leves
         _WIN32_WINNT=0x0601   # Windows 7+ (WASAPI)
@@ -156,9 +156,12 @@ elseif(UNIX AND NOT APPLE)
     # Linux: linkar ALSA e pthreads
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(ALSA REQUIRED alsa)
-    target_include_directories(slacodec-cli PRIVATE ${ALSA_INCLUDE_DIRS})
-    target_link_libraries(slacodec-cli PRIVATE ${ALSA_LIBRARIES} pthread)
+    target_include_directories(slacodec PRIVATE ${ALSA_INCLUDE_DIRS})
+    target_link_libraries(slacodec PRIVATE ${ALSA_LIBRARIES} pthread)
 endif()
+
+# ── REGRA DE INSTALAÇÃO GLOBAL ──
+install(TARGETS slacodec DESTINATION bin)
 
 option(SLAC_ENABLE_SANITIZERS "Enable ASan and UBSan" OFF)
 option(SLAC_BUILD_FUZZER "Build libFuzzer target (requires clang)" OFF)
@@ -176,7 +179,7 @@ if(SLAC_ENABLE_SANITIZERS AND NOT MSVC)
         slac_dsp_smoke
         slac_reverb_registry_smoke
         slac_reverb_conv_smoke
-        slacodec-cli
+        slacodec
         slac_fuzz_smoke
         slac_fdn_smoke
         slac_auto_chunk_smoke

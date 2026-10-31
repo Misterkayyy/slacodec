@@ -172,6 +172,10 @@ inline SpatMetadata readSpat(const uint8_t* d, size_t sz, size_t& p) {
 // ENCODE
 // ──────────────────────────────────────────────────────────────
 
+// ──────────────────────────────────────────────────────────────
+// ENCODE (OTIMIZADO: Zero alocações no loop quente)
+// ──────────────────────────────────────────────────────────────
+
 inline std::vector<uint8_t> encodeSlacFile(
     const std::vector<std::vector<int32_t>>& channels,
     const SlacFormat& fmt_in,
@@ -212,12 +216,11 @@ inline std::vector<uint8_t> encodeSlacFile(
     hash_payload.insert(hash_payload.end(), digest.begin(), digest.end());
 
     // ── Frames (paralelizado em múltiplos threads) ─────────────
-    // Determinar número de threads (2-4 em Android quad-core)
+    // Aumentado para 8 threads para aproveitar CPUs modernas (Ryzen/Core i7+)
     const unsigned int num_threads = std::min(
-        4u,
+        8u,
         std::max(1u, std::thread::hardware_concurrency()));
 
-    // Estrutura para armazenar resultado de cada thread
     struct ThreadResult {
         std::vector<uint8_t> bytes;
         std::vector<uint32_t> offsets;
@@ -226,7 +229,6 @@ inline std::vector<uint8_t> encodeSlacFile(
     std::vector<ThreadResult> results(num_threads);
     std::vector<std::thread> threads;
 
-    // Frames por thread (divisão equilibrada)
     const uint32_t frames_per_thread = (num_frames + num_threads - 1) / num_threads;
 
     for (unsigned int t = 0; t < num_threads; ++t) {
@@ -237,56 +239,65 @@ inline std::vector<uint8_t> encodeSlacFile(
 
         threads.emplace_back([&, t, start_frame, end_frame]() {
             ThreadResult& result = results[t];
-            result.bytes.reserve(4096 * (end_frame - start_frame) * f.channelCount / 2);
+            // Estimativa generosa para evitar realocações do vetor principal
+            result.bytes.reserve((end_frame - start_frame) * frame_size * 3);
             result.offsets.reserve(end_frame - start_frame);
+
+            // 🚀 OTIMIZAÇÃO CRÍTICA: Pré-alocar buffers fora do loop
+            std::vector<int32_t> frame_l;
+            std::vector<int32_t> frame_r;
+            std::vector<int32_t> s0;
+            std::vector<int32_t> s1;
+            std::vector<std::vector<int32_t>> frame_streams(2);
+            
+            if (f.channelCount == 2) {
+                frame_l.reserve(frame_size);
+                frame_r.reserve(frame_size);
+                s0.reserve(frame_size);
+                s1.reserve(frame_size);
+                frame_streams[0].reserve(frame_size);
+                frame_streams[1].reserve(frame_size);
+            } else {
+                frame_streams[0].reserve(frame_size);
+            }
+
+            StereoMode frame_mode = StereoMode::LeftRight;
 
             for (uint32_t fi = start_frame; fi < end_frame; ++fi) {
                 size_t start = static_cast<size_t>(fi) * frame_size;
-                size_t count = std::min(static_cast<size_t>(frame_size),
-                                        total_samples - start);
+                size_t count = std::min(static_cast<size_t>(frame_size), total_samples - start);
 
                 result.offsets.push_back(static_cast<uint32_t>(result.bytes.size()));
 
-                std::vector<std::vector<int32_t>> frame_streams;
-                StereoMode frame_mode = StereoMode::MidSide;
-
                 if (f.channelCount == 2) {
-                    std::vector<int32_t> frame_l(channels[0].begin() + start,
-                                                 channels[0].begin() + start + count);
-                    std::vector<int32_t> frame_r(channels[1].begin() + start,
-                                                 channels[1].begin() + start + count);
+                    // .assign() reusa a memória alocada, evitando new/delete por frame!
+                    frame_l.assign(channels[0].begin() + start, channels[0].begin() + start + count);
+                    frame_r.assign(channels[1].begin() + start, channels[1].begin() + start + count);
 
-                    if (adaptive)
-                        frame_mode = selectBestStereoMode(frame_l, frame_r);
+                    frame_mode = adaptive ? selectBestStereoMode(frame_l, frame_r) : StereoMode::MidSide;
 
-                    std::vector<int32_t> s0, s1;
                     stereoEncode(frame_l, frame_r, frame_mode, s0, s1);
 
-                    frame_streams.push_back(std::move(s0));
-                    frame_streams.push_back(std::move(s1));
+                    frame_streams[0] = std::move(s0);
+                    frame_streams[1] = std::move(s1);
                 } else {
                     frame_mode = StereoMode::LeftRight;
-                    frame_streams.push_back(std::vector<int32_t>(
-                        channels[0].begin() + start,
-                        channels[0].begin() + start + count));
+                    frame_streams[0].assign(channels[0].begin() + start, channels[0].begin() + start + count);
                 }
 
                 int bps = f.bitsPerSample;
                 int s1bits = bps;
-                if (f.channelCount == 2 && frame_mode != StereoMode::LeftRight)
+                if (f.channelCount == 2 && frame_mode != StereoMode::LeftRight) {
                     s1bits = bps + 1;
+                }
 
-                auto frame_bytes = encode_frame(frame_streams, bps,
-                                                lpc_order, lpc_shift, frame_mode,
-                                                use_range_coding, s1bits);
+                auto frame_bytes = encode_frame(frame_streams, bps, lpc_order, lpc_shift, frame_mode, use_range_coding, s1bits);
 
-                result.bytes.insert(result.bytes.end(),
-                                    frame_bytes.begin(), frame_bytes.end());
+                result.bytes.insert(result.bytes.end(), frame_bytes.begin(), frame_bytes.end());
             }
         });
     }
 
-    // Aguardar todas as threads terminarem
     for (auto& thread : threads) {
         thread.join();
     }
@@ -301,12 +312,10 @@ inline std::vector<uint8_t> encodeSlacFile(
         for (uint32_t local_offset : result.offsets) {
             frame_offsets.push_back(cumulative_offset + local_offset);
         }
-        data_payload.insert(data_payload.end(),
-                            result.bytes.begin(), result.bytes.end());
+        data_payload.insert(data_payload.end(), result.bytes.begin(), result.bytes.end());
         cumulative_offset += static_cast<uint32_t>(result.bytes.size());
     }
 
-    // Invariante: nunca emitir arquivo com audio nao-vazio e data vazio.
     if (total_samples > 0 && data_payload.empty())
         throw std::runtime_error("encodeSlacFile: internal error, empty data chunk");
 
@@ -349,6 +358,9 @@ inline std::vector<uint8_t> encodeSlacFile(
 
     // ── montagem ────────────────────────────────────────────
     std::vector<uint8_t> file;
+    // Pré-alocar o tamanho final aproximado para evitar realocações na montagem
+    file.reserve(128 + spat_payload.size() + auto_payload.size() + seek_payload.size() + fmt_payload.size() + hash_payload.size() + data_payload.size());
+    
     detail::appendChunk(file, detail::kChunkSLAC, slac_payload);
     detail::appendChunk(file, detail::kChunkFmt,  fmt_payload);
     if (spat)
