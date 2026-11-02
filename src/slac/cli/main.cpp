@@ -204,7 +204,7 @@ static int cmd_encode(int argc, char** argv) {
     std::string output_path;
 
     // NOVO: Se o output não for especificado, gera automaticamente com a extensão .slac
-    if (argc >= 4) {
+        if (argc >= 4 && argv[3][0] != '-') {
         output_path = argv[3];
     } else {
         std::filesystem::path p(input_path);
