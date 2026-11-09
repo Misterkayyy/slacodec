@@ -203,8 +203,7 @@ static int cmd_encode(int argc, char** argv) {
     std::string input_path = argv[2];
     std::string output_path;
 
-    // NOVO: Se o output não for especificado, gera automaticamente com a extensão .slac
-        if (argc >= 4 && argv[3][0] != '-') {
+    if (argc >= 4 && argv[3][0] != '-') {
         output_path = argv[3];
     } else {
         std::filesystem::path p(input_path);
@@ -217,6 +216,9 @@ static int cmd_encode(int argc, char** argv) {
     std::string preset_name = get_opt(argc, argv, "--preset-encode", "balanced");
     EncoderPreset preset = get_preset(preset_name);
     bool auto_spatial = has_flag(argc, argv, "--auto-spatial");
+    
+    // NOVO: Suporte para diretório de IRs customizado
+    std::string ir_dir = get_opt(argc, argv, "--ir-dir", "");
 
     int frame_size = get_opt_int(argc, argv, "--frame-size", static_cast<int>(preset.frame_size));
     int lpc_order  = get_opt_int(argc, argv, "--lpc-order", preset.max_lpc_order);
@@ -273,15 +275,22 @@ static int cmd_encode(int argc, char** argv) {
         preset_id = features.suggested_preset_id;
         
         rec_hrir = slac::dsp::recommend_hrir(features);
-        hrir_path = slac::dsp::get_hrir_path(rec_hrir);
+        hrir_path = slac::dsp::get_hrir_path(rec_hrir, ir_dir); // <-- PASSA O ir_dir
         
         std::cout << "  Recommended HRIR: ";
         if (rec_hrir == slac::dsp::HRIRType::TrueStereo) std::cout << "True Stereo (percussive)\n";
         else if (rec_hrir == slac::dsp::HRIRType::SpatialIR) std::cout << "Spatial IR (stereo-centered)\n";
         else std::cout << "Surround Crossfeed (balanced)\n";
         
-        auto_kfs = slac::dsp::generate_auto_keyframes(pcm, effective_bits, wav.sample_rate);
-        std::cout << "  Generated " << auto_kfs.size() << " spatial keyframes.\n";
+        // Verificar se o arquivo HRIR existe antes de tentar embeddar
+        if (!std::filesystem::exists(hrir_path)) {
+            std::cerr << "Warning: HRIR file not found: " << hrir_path << "\n";
+            std::cerr << "Hint: Use --ir-dir <path> to specify IR directory, or set SLAC_IR_DIR environment variable.\n";
+            hrir_path = ""; // Não embbedar se não existir
+        } else {
+            auto_kfs = slac::dsp::generate_auto_keyframes(pcm, effective_bits, wav.sample_rate);
+            std::cout << "  Generated " << auto_kfs.size() << " spatial keyframes.\n";
+        }
     } else if (auto_spatial) {
         std::cerr << "Warning: --auto-spatial requires stereo, ignoring.\n";
     }

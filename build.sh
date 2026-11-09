@@ -95,16 +95,27 @@ if [[ $DO_INSTALL -eq 1 ]]; then
     
     elif [[ "$PLATFORM" == "Termux" ]]; then
         echo "📱 Termux detected. Installing to \$PREFIX/bin ($PREFIX/bin)..."
-        # No Termux, $PREFIX é algo como /data/data/com.termux/files/usr
         cp build/slacodec "$PREFIX/bin/slacodec"
         chmod +x "$PREFIX/bin/slacodec"
-        echo "✅ Installation complete! You can now run 'slacodec' from anywhere in Termux."
+        echo "✅ Binary installation complete!"
+        
+        # Instalar IRs no Termux
+        echo "📱 Installing IRs to \$PREFIX/share/slacodec/ir..."
+        mkdir -p "$PREFIX/share/slacodec/ir"
+        cp -r ir/* "$PREFIX/share/slacodec/ir/" 2>/dev/null || echo "⚠️  No IR files found in ./ir/"
+        echo "✅ IR installation complete! You can now run 'slacodec' from anywhere in Termux."
     
     else
         # Linux / macOS padrão
         echo "🐧 Installing to /usr/local/bin..."
         echo "   (requires sudo password)"
         sudo cmake --install build
-        echo "✅ Installation complete! You can now run 'slacodec' from anywhere."
+        echo "✅ Binary installation complete!"
+        
+        # Instalar IRs no Linux/macOS
+        echo "📦 Installing IRs to /usr/local/share/slacodec/ir..."
+        sudo mkdir -p /usr/local/share/slacodec/ir
+        sudo cp -r ir/* /usr/local/share/slacodec/ir/ 2>/dev/null || echo "⚠️  No IR files found in ./ir/"
+        echo "✅ IR installation complete! You can now run 'slacodec' from anywhere."
     fi
 fi

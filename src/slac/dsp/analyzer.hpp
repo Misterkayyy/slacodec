@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <numeric>
 #include <vector>
+#include <filesystem>
+#include <cstdlib>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -259,11 +261,39 @@ inline HRIRType recommend_hrir(const AudioFeatures& feat) {
     return HRIRType::TrueStereo;
 }
 
-inline std::string get_hrir_path(HRIRType type, const std::string& ir_dir = "./ir") {
+inline std::string find_ir_dir() {
+    // 1. Verificar variável de ambiente
+    const char* env_dir = std::getenv("SLAC_IR_DIR");
+    if (env_dir && std::filesystem::exists(env_dir)) {
+        return std::string(env_dir);
+    }
+    
+    // 2. Verificar diretório de instalação padrão (Linux)
+    const std::string system_ir_dir = "/usr/local/share/slacodec/ir";
+    if (std::filesystem::exists(system_ir_dir)) {
+        return system_ir_dir;
+    }
+    
+    // 3. Verificar diretório de instalação padrão (Windows)
+    const char* appdata = std::getenv("APPDATA");
+    if (appdata) {
+        std::string win_ir_dir = std::string(appdata) + "\\slacodec\\ir";
+        if (std::filesystem::exists(win_ir_dir)) {
+            return win_ir_dir;
+        }
+    }
+    
+    // 4. Fallback: diretório atual
+    return "./ir";
+}
+
+inline std::string get_hrir_path(HRIRType type, const std::string& ir_dir = "") {
+    std::string base_dir = ir_dir.empty() ? find_ir_dir() : ir_dir;
+    
     switch (type) {
-        case HRIRType::TrueStereo: return ir_dir + "/true_stereo.wav";
-        case HRIRType::SpatialIR: return ir_dir + "/spatial.wav";
-        default: return ir_dir + "/true_stereo.wav";
+        case HRIRType::TrueStereo: return base_dir + "/true_stereo.wav";
+        case HRIRType::SpatialIR:  return base_dir + "/spatial_ir.wav";
+        default:                   return base_dir + "/true_stereo.wav";
     }
 }
 
